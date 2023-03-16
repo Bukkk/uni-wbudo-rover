@@ -58,26 +58,25 @@ namespace steering {
 }
 
 #include <TimerOne.h>
-template <uint8_t Pin>
-struct beeper {
+namespace beeper {
 
   beeper() {
-    pinMode(Pin, OUTPUT);
+    pinMode(pins::led, OUTPUT);
     Timer1.initialize();    
   }
 
-  static void beep() {
-    uint8_t state = digitalRead(Pin) ^ 1;
-    digitalWrite(Pin, state);
+  void beep() {
+    uint8_t state = digitalRead(pins::led) ^ 1;
+    digitalWrite(pins::led, state);
   }
 
-  static void stop() {
+  void stop() {
     Timer1.detachInterrupt();
-    digitalWrite(Pin, 0);
+    digitalWrite(pins::led, 0);
   }
 
-  static void start(uint32_t period) {
-    digitalWrite(Pin, 0);
+  void start(uint32_t period) {
+    digitalWrite(pins::led, 0);
     Timer1.detachInterrupt();
     Timer1.attachInterrupt(beep, period);
   }
@@ -105,20 +104,20 @@ void go_backward(uint16_t cm) {
 }
 
 void setup() {  
-  digitalWrite(pins::led, 255);
-  delay(2000);
-  digitalWrite(pins::led, 0);  
-}
-
-void loop() {
-
   pinMode(pins::en_a, OUTPUT);
   pinMode(pins::en_b, OUTPUT);
   pinMode(pins::in_1, OUTPUT);
   pinMode(pins::in_2, OUTPUT);
   pinMode(pins::in_3, OUTPUT);
   pinMode(pins::in_4, OUTPUT);
+  pinMode(pins::led, OUTPUT);
 
+  digitalWrite(pins::led, 255);
+  delay(2000);
+  digitalWrite(pins::led, 0);  
+}
+
+void loop() {
   analogWrite(pins::en_a, 0);
   analogWrite(pins::en_b, 0);
   analogWrite(pins::in_1, 0);
@@ -126,16 +125,14 @@ void loop() {
   analogWrite(pins::in_2, 0);
   analogWrite(pins::in_3, 0);
 
-  auto beep = beeper<pins::led>{};
-
   for(;;) {
     go_forward(50);
     
     delay(1000);
 
-    beep.start(100000);
-    go_backward(30);
-    beep.stop();
+    beeper::start(100000);
+    go_backward(50);
+    beeper::stop();
 
     delay(1000);
   }
