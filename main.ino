@@ -8,8 +8,38 @@ constexpr uint8_t in_3 = 6;
 constexpr uint8_t in_4 = 5;
 constexpr uint8_t en_b = 3;  // zolty prawo 1.0
 
+constexpr uint8_t sensor_left = A0; // niebieski z lewej
+constexpr uint8_t sensor_right = A1; // niebieski z prawej
+
 constexpr uint8_t builtin_led = 13;
+
+uint8_t with_mode(uint8_t pin, uint8_t mode) {
+  pinMode(pin, mode);
+  return pin;
 }
+}
+
+#include <TimerOne.h>
+namespace beeper {
+
+  void beep() {
+    auto state = digitalRead(13) ^ 1;
+    digitalWrite(13, state);
+  }
+
+  void stop() {
+    Timer1.detachInterrupt();
+    digitalWrite(13, 0);
+  }
+
+  void start(long int period) {
+    digitalWrite(13, 0);
+    Timer1.detachInterrupt();
+    Timer1.attachInterrupt(beep, period);
+  }
+
+}
+
 
 namespace device {
 struct motor {
@@ -36,10 +66,11 @@ struct motor {
     digitalWrite(_pin_backward, LOW);
   }
 };
+
+struct button {
+  const uint8_t input_pin;
+};
 }
-
-
-#include "beeper.hpp"
 
 // void go_forward(uint16_t cm) {
 //   steering::set_left(255);
@@ -61,35 +92,52 @@ struct motor {
 //   steering::right_stop();
 // }
 
-void setup() {
+void setup() {  
   pinMode(pins::builtin_led, OUTPUT);
   digitalWrite(pins::builtin_led, HIGH);
   delay(2000);
   digitalWrite(pins::builtin_led, LOW);
 }
 
+volatile uint8_t cnt0 = {};
+volatile uint8_t cnt1 = {};
+ISR(PCINT1_vect){
+ if( (PINC & (1 << PC0)) ) 
+ cnt0++;
+
+ if( (PINC & (1 << PC1)) )
+ cnt1++;
+}
+
 void loop() {
-  pinMode(pins::en_a, OUTPUT);
-  pinMode(pins::en_b, OUTPUT);
-  pinMode(pins::in_1, OUTPUT);
-  pinMode(pins::in_2, OUTPUT);
-  pinMode(pins::in_3, OUTPUT);
-  pinMode(pins::in_4, OUTPUT);
-  pinMode(pins::builtin_led, OUTPUT);
+  Serial.begin(9600);
+  while(!Serial);
 
   Timer1.initialize();
 
+  PCICR = 0x02;
+  PCMSK1 |= (1 << PCINT8) | (1 << PCINT9);
+
   device::motor left_motor = {
-    ._pin_enable = pins::en_a,
-    ._pin_forward = pins::in_1,
-    ._pin_backward = pins::in_2,
+    ._pin_enable = pins::with_mode(pins::en_a, OUTPUT),
+    ._pin_forward = pins::with_mode(pins::in_1, OUTPUT),
+    ._pin_backward = pins::with_mode(pins::in_2, OUTPUT),
   };
 
   device::motor right_motor = {
-    ._pin_enable = pins::en_b,
-    ._pin_forward = pins::in_4,
-    ._pin_backward = pins::in_3,
+    ._pin_enable = pins::with_mode(pins::en_b, OUTPUT),
+    ._pin_forward = pins::with_mode(pins::in_4, OUTPUT),
+    ._pin_backward = pins::with_mode(pins::in_3, OUTPUT),
   };
+
+  // device::button buttie_left = {
+  //   .input_pin = pins::with_mode(pins::sensor_left, INPUT_PULLUP),
+  // };
+  // device::button buttie_right = {
+  //   .input_pin = pins::with_mode(pins::sensor_right, INPUT_PULLUP),
+  // };
+  // digitalWrite(pins::sensor_left, HIGH);
+  // digitalWrite(pins::sensor_right, HIGH);
 
   auto& motor = left_motor;
 
@@ -98,7 +146,7 @@ void loop() {
   for (;;) {
 
     // go_forward(50);
-    motor.forward();    
+    motor.forward();
     delay(1000);
 
 
@@ -111,6 +159,6 @@ void loop() {
     motor.stop();
     delay(1000);
 
-
+    Serial.println(cnt0);
   }
 }
