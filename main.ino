@@ -338,7 +338,7 @@ struct blocking_steering {
 };
 
 namespace constants {
-  constexpr astd::array<uint16_t, 5> positions = { 0u, 45u, 90u, 135u, 180u };  // if i make it constexpr static member in blocking_sonar_tower compiler crashes XD
+constexpr astd::array<uint16_t, 5> positions = { 0u, 45u, 90u, 135u, 180u };  // if i make it constexpr static member in blocking_sonar_tower compiler crashes XD
 }
 struct blocking_sonar_tower {
   device::sonar& sonar_;
@@ -363,10 +363,17 @@ struct blocking_sonar_tower {
 }
 
 // TODO przetestuj sonar
-// TODO przetestuj odleglosc jechania
-// TODO wymysl mnoznik na obrot
+// TODO przetestuj dokladna odleglosc jechania
+// TODO przetestuj dokladny obrot i wymysl mnoznik
 // TODO przetestuj serwo
-// TODO sterownik sonaru na serwie
+
+// TODO kalibracja kolek??
+// TODO decydowanie kierunku
+// TODO zatrzymywanie przed przeszkoda, rozgladanie sie, podejmowanie decyzji, skrecanie, kontynuuowanie
+
+namespace config {
+bool print_debug = true;
+}
 
 void setup() {
   pinMode(pins::builtin_led, OUTPUT);
@@ -430,15 +437,8 @@ void loop() {
   right_motor.set_power(255);
   for (;;) {
 
-    // Serial.print("l: ");
-    // Serial.print(sensor_left._counter);
-    // Serial.print("r: ");
-    // Serial.print(sensor_right._counter);
-    // Serial.print("\n");
-    // delay(100);
-
     drive.forward(40);
-    auto measurements = tower.measure();
+    const auto measurements = tower.measure();
     delay(500);
     beeper::start(100000);
     drive.backward(40);
@@ -448,5 +448,21 @@ void loop() {
     delay(500);
     drive.rotate_right(40);
     delay(500);
+
+    if constexpr (config::debug) {
+      Serial.print("l counter: ");
+      Serial.print(sensor_left.counter_);
+      Serial.print("r counter: ");
+      Serial.print(sensor_right.counter_);
+      Serial.print("\n");
+      for (uint8_t i{}; i < driver::constants::positions.size(); ++i) {
+        Serial.print("angle ");
+        Serial.print(driver::constants::positions[i]);
+        Serial.print(" -> ");
+        Serial.print(measurements[i].first);
+      }
+      Serial.print("\n");
+    }
+    // delay(100);
   }
 }
