@@ -8,8 +8,12 @@ constexpr uint8_t in_3 = 6;
 constexpr uint8_t in_4 = 5;
 constexpr uint8_t en_b = 3;  // zolty prawo 1.0
 
-constexpr uint8_t sensor_left = A0; // niebieski z lewej
-constexpr uint8_t sensor_right = A1; // niebieski z prawej
+// brazowy vcc
+// czerwony gnd
+constexpr uint8_t sensor_left = A0;  // pomaranczowy
+// szary vcc
+// fioletowy gnd
+constexpr uint8_t sensor_right = A1;  // niebieski
 
 constexpr uint8_t builtin_led = 13;
 
@@ -22,21 +26,21 @@ uint8_t with_mode(uint8_t pin, uint8_t mode) {
 #include <TimerOne.h>
 namespace beeper {
 
-  void beep() {
-    auto state = digitalRead(13) ^ 1;
-    digitalWrite(13, state);
-  }
+void beep() {
+  auto state = digitalRead(13) ^ 1;
+  digitalWrite(13, state);
+}
 
-  void stop() {
-    Timer1.detachInterrupt();
-    digitalWrite(13, 0);
-  }
+void stop() {
+  Timer1.detachInterrupt();
+  digitalWrite(13, 0);
+}
 
-  void start(long int period) {
-    digitalWrite(13, 0);
-    Timer1.detachInterrupt();
-    Timer1.attachInterrupt(beep, period);
-  }
+void start(long int period) {
+  digitalWrite(13, 0);
+  Timer1.detachInterrupt();
+  Timer1.attachInterrupt(beep, period);
+}
 
 }
 
@@ -70,6 +74,10 @@ struct motor {
 struct button {
   const uint8_t input_pin;
 };
+
+struct sensor {
+  volatile uint8_t _counter = {};
+};
 }
 
 // void go_forward(uint16_t cm) {
@@ -92,28 +100,30 @@ struct button {
 //   steering::right_stop();
 // }
 
-void setup() {  
+void setup() {
   pinMode(pins::builtin_led, OUTPUT);
   digitalWrite(pins::builtin_led, HIGH);
   delay(2000);
   digitalWrite(pins::builtin_led, LOW);
 }
 
-volatile uint8_t cnt0 = {};
+device::sensor sensor_left = {};
+device::sensor sensor_right = {};
 volatile uint8_t cnt1 = {};
-ISR(PCINT1_vect){
- if( (PINC & (1 << PC0)) ) 
- cnt0++;
+ISR(PCINT1_vect) {
+  if ((PINC & (1 << PC0)))
+    sensor_right._counter++;
 
- if( (PINC & (1 << PC1)) )
- cnt1++;
+  if ((PINC & (1 << PC1)))
+    sensor_left._counter++;
 }
 
 void loop() {
   Serial.begin(9600);
-  while(!Serial);
-
   Timer1.initialize();
+  while (!Serial)
+    ;
+
 
   PCICR = 0x02;
   PCMSK1 |= (1 << PCINT8) | (1 << PCINT9);
@@ -139,26 +149,38 @@ void loop() {
   // digitalWrite(pins::sensor_left, HIGH);
   // digitalWrite(pins::sensor_right, HIGH);
 
-  auto& motor = left_motor;
+  // auto& motor = left_motor;
 
   left_motor.set_power(255);
   right_motor.set_power(255);
+
+  // left_motor.forward();
+  // right_motor.forward();
+
   for (;;) {
 
-    // go_forward(50);
-    motor.forward();
-    delay(1000);
+    // // go_forward(50);
+    // motor.forward();
+    // delay(1000);
 
 
-    // beeper::start(100000);
-    // go_backward(50);
-    motor.backward();
-    delay(1000);
+    // // beeper::start(100000);
+    // // go_backward(50);
+    // motor.backward();
+    // delay(1000);
 
-    // beeper::stop();
-    motor.stop();
-    delay(1000);
+    // // beeper::stop();
+    // motor.stop();
+    // delay(1000);
 
-    Serial.println(cnt0);
+    // Serial.println(cnt0);
+
+    Serial.print("l: ");
+    Serial.print(sensor_left._counter);
+    Serial.print("r: ");
+    Serial.print(sensor_right._counter);
+    Serial.print("\n");
+    delay(100);
+    
   }
 }
