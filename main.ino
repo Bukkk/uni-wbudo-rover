@@ -130,7 +130,7 @@ public:
     return &data_[0];
   }
 
-  const_iterator begin() const noexcept {
+  constexpr const_iterator begin() const noexcept {
     return &data_[0];
   }
 
@@ -138,7 +138,7 @@ public:
     return &data_[N];
   }
 
-  const_iterator end() const noexcept {
+  constexpr const_iterator end() const noexcept {
     return &data_[N];
   }
 };
@@ -171,7 +171,7 @@ ISR(PCINT1_vect) {
 namespace beeper {
 
 void init() {
-  Timer1.initialize();  // blokuje 9 i 10??
+  Timer1.initialize();  // is using 9 i 10??
 }
 
 void beep() {
@@ -233,8 +233,8 @@ struct tick_sensor {
 struct sonar {
   static float constexpr _sound_speed_ms = 343.8;                      // m/s 20C
   static float constexpr _sound_speed_mmus = _sound_speed_ms * 0.001;  // mm/us
-  static float constexpr delay_to_mm = _sound_speed_mmus * 0.5;        // 0.5 bo dzwiek pokonuje dwukrotnosc osleglosci w obie strony
-  static float constexpr delay_to_cm = delay_to_mm * 0.1;
+  static float constexpr mm_to_delay = _sound_speed_mmus * 0.5;        // 0.5 sound travels twice the distance from sensor to obstacle
+  static float constexpr cm_to_delay = mm_to_delay * 0.1;
 
   const uint8_t trigger_pin_;
   const uint8_t echo_pin_;
@@ -259,7 +259,7 @@ struct sonar {
     } else if (pulse > 25000) {
       return measurement_t{ 0, error_reason::too_far };
     } else {
-      uint16_t meas = pulse * delay_to_cm;
+      uint16_t meas = pulse * cm_to_delay;
       return measurement_t{ meas, error_reason::none };
     }
   }
@@ -351,8 +351,7 @@ struct blocking_sonar_tower {
     for (uint8_t i{}; i < positions.size(); ++i) {
       uint8_t deg = positions[i];
       servo_.set_angle(deg);
-      delay(100);  // aby servo sie obrocilo??
-      // auto& [meas, res] = sonar_.measure();
+      delay(100);  // time to allow servo to rotate??
       auto m = sonar_.measure();
       results[i] = m;
     }
