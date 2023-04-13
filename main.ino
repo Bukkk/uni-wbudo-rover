@@ -1,30 +1,59 @@
 #include <stdint.h>
 
 namespace pins {
-constexpr uint8_t en_a = 11;  // bialy lewo 1.0
-constexpr uint8_t in_1 = 10;
-constexpr uint8_t in_2 = 9;
-constexpr uint8_t in_3 = 6;
-constexpr uint8_t in_4 = 5;
-constexpr uint8_t en_b = 3;  // zolty prawo 1.0
+constexpr uint8_t builtin_led = 13;
+
+// 11 10 9 6 5 3 orginalnie ale 9 10 sa uzywane przez timer1
+constexpr uint8_t en_a = 6;  // bialy lewo 1.0
+constexpr uint8_t in_1 = 7;
+constexpr uint8_t in_2 = 8;
+constexpr uint8_t in_3 = 2;
+constexpr uint8_t in_4 = 4;
+constexpr uint8_t en_b = 5;  // zolty prawo 1.0
 
 // brazowy vcc
 // czerwony gnd
-constexpr uint8_t sensor_left = A0;  // pomaranczowy
+constexpr uint8_t counter_a0 = A0;  // pomaranczowy
 // szary vcc
 // fioletowy gnd
-constexpr uint8_t sensor_right = A1;  // niebieski
-
-constexpr uint8_t builtin_led = 13;
+constexpr uint8_t counter_a1 = A1;  // niebieski
 
 uint8_t with_mode(uint8_t pin, uint8_t mode) {
   pinMode(pin, mode);
   return pin;
 }
+
+}
+
+namespace counters {
+using counter_t = uint32_t;
+
+volatile uint32_t g_cnt_a0 = {};
+volatile uint32_t g_cnt_a1 = {};
+
+void init() {
+  pinMode(pins::counter_a0, INPUT);
+  pinMode(pins::counter_a1, INPUT);
+
+  PCICR = 0x02;
+  PCMSK1 |= (1 << PCINT8) | (1 << PCINT9);
+}
+
+ISR(PCINT1_vect) {
+  if ((PINC & (1 << PC0)))
+    counters::g_cnt_a0++;
+
+  if ((PINC & (1 << PC1)))
+    counters::g_cnt_a1++;
+}
 }
 
 #include <TimerOne.h>
 namespace beeper {
+
+void init() {
+  Timer1.initialize();  // blokuje 9 i 10??
+}
 
 void beep() {
   auto state = digitalRead(13) ^ 1;
@@ -36,16 +65,17 @@ void stop() {
   digitalWrite(13, 0);
 }
 
-void start(long int period) {
+void start(uint32_t us) {
   digitalWrite(13, 0);
   Timer1.detachInterrupt();
-  Timer1.attachInterrupt(beep, period);
+  Timer1.attachInterrupt(beep, us);
 }
 
 }
 
 
 namespace device {
+
 struct motor {
   const uint8_t _pin_enable;
   const uint8_t _pin_forward;
@@ -72,36 +102,34 @@ struct motor {
 };
 
 struct button {
-  const uint8_t input_pin;
+  const uint8_t _input_pin;
 };
 
-struct sensor {
-  volatile uint8_t _counter = {};
+struct tick_sensor {
+  static constexpr float sensor_to_cm = (2 * 40.) / 21.;
 
-  reset() {
-    _counter = 0;
-  }
+  volatile counters::counter_t& _counter;
 };
+
 }
 
 namespace steering {
-constexpr float sensor_to_cm = (2 * 40) / 21;
 
-struct drive {
+struct busy_drive {
   device::motor& l;
   device::motor& r;
 
-  device::sensor& ls;
-  device::sensor& rs;
+  device::tick_sensor& ls;
+  device::tick_sensor& rs;
 
-  void _go(uint16_t cm, void (device::motor::*l_direction)(), void (device::motor::*r_direction)()) {
-    ls.reset();
-    rs.reset();
+  void _go(void (device::motor::*l_action)(), void (device::motor::*r_action)(), uint16_t cm) {
+    ls._counter = 0;
+    rs._counter = 0;
 
-    (l.*l_direction)();
-    (r.*r_direction)();
+    (l.*l_action)();
+    (r.*r_action)();
 
-    uint16_t ticks = cm * sensor_to_cm;
+    uint16_t ticks = cm * device::tick_sensor::sensor_to_cm;
 
     bool lb = true;
     bool rb = true;
@@ -115,29 +143,28 @@ struct drive {
         rb = false;
       }
     }
-    ls.reset();
-    rs.reset();
+    ls._counter = 0;
+    rs._counter = 0;
   }
 
-  void go_forward(uint16_t cm) {
-    _go(cm, &device::motor::forward, &device::motor::forward);
+  void forward(uint16_t cm) {
+    _go(&device::motor::forward, &device::motor::forward, cm);
   }
 
-  void go_backward(uint16_t cm) {
-    _go(cm, &device::motor::backward, &device::motor::backward);
+  void backward(uint16_t cm) {
+    _go(&device::motor::backward, &device::motor::backward, cm);
   }
 
-  void go_left(uint16_t cm) {
-    _go(cm, &device::motor::backward, &device::motor::forward);
+  void rotate_left(uint16_t cm) {
+    _go(&device::motor::backward, &device::motor::forward, cm);
   }
 
-  void go_right(uint16_t cm) {
-    _go(cm, &device::motor::forward, &device::motor::backward);
+  void rotate_right(uint16_t cm) {
+    _go(&device::motor::forward, &device::motor::backward, cm);
   }
 };
+
 }
-
-
 
 void setup() {
   pinMode(pins::builtin_led, OUTPUT);
@@ -146,41 +173,30 @@ void setup() {
   digitalWrite(pins::builtin_led, LOW);
 }
 
-device::sensor sensor_left = {};
-device::sensor sensor_right = {};
-volatile uint8_t cnt1 = {};
-ISR(PCINT1_vect) {
-  if ((PINC & (1 << PC0)))
-    sensor_right._counter++;
-
-  if ((PINC & (1 << PC1)))
-    sensor_left._counter++;
-}
-
 void loop() {
   Serial.begin(9600);
-  Timer1.initialize();  // blokuje 9 i 10
   while (!Serial)
     ;
 
+  beeper::init();
 
-  PCICR = 0x02;
-  PCMSK1 |= (1 << PCINT8) | (1 << PCINT9);
-
-  // podzielona inicjalizacja sensorleft i right przez ISR
+  counters::init();
+  device::tick_sensor sensor_left = { counters::g_cnt_a0 };
+  device::tick_sensor sensor_right = { counters::g_cnt_a1 };
 
   device::motor left_motor = {
     ._pin_enable = pins::with_mode(pins::en_a, OUTPUT),
     ._pin_forward = pins::with_mode(pins::in_1, OUTPUT),
     ._pin_backward = pins::with_mode(pins::in_2, OUTPUT),
   };
-
   device::motor right_motor = {
     ._pin_enable = pins::with_mode(pins::en_b, OUTPUT),
     ._pin_forward = pins::with_mode(pins::in_4, OUTPUT),
     ._pin_backward = pins::with_mode(pins::in_3, OUTPUT),
   };
+  steering::busy_drive drive = { .l = left_motor, .r = right_motor, .ls = sensor_left, .rs = sensor_right };
 
+  // symulator samochodzika
   // device::button buttie_left = {
   //   .input_pin = pins::with_mode(pins::sensor_left, INPUT_PULLUP),
   // };
@@ -192,25 +208,7 @@ void loop() {
 
   left_motor.set_power(255);
   right_motor.set_power(255);
-
-  steering::drive drive = { .l = left_motor, .r = right_motor, .ls = sensor_left, .rs = sensor_right };
-
   for (;;) {
-
-    // // go_forward(50);
-    // motor.forward();
-    // delay(1000);
-
-    // // beeper::start(100000);
-    // // go_backward(50);
-    // motor.backward();
-    // delay(1000);
-
-    // // beeper::stop();
-    // motor.stop();
-    // delay(1000);
-
-    // Serial.println(cnt0);
 
     // Serial.print("l: ");
     // Serial.print(sensor_left._counter);
@@ -219,13 +217,15 @@ void loop() {
     // Serial.print("\n");
     // delay(100);
 
-    drive.go_forward(40);
+    drive.forward(40);
     delay(500);
-    drive.go_backward(40);
+    beeper::start(100000);
+    drive.backward(40);
+    beeper::stop();
     delay(500);
-    drive.go_left(40);
+    drive.rotate_left(40);
     delay(500);
-    drive.go_right(40);
+    drive.rotate_right(40);
     delay(500);
   }
 }
