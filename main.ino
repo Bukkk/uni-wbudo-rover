@@ -77,28 +77,67 @@ struct button {
 
 struct sensor {
   volatile uint8_t _counter = {};
+
+  reset() {
+    _counter = 0;
+  }
 };
 }
 
-// void go_forward(uint16_t cm) {
-//   steering::set_left(255);
-//   steering::set_right(255);
-//   steering::left_forward();
-//   steering::right_forward();
-//   delay(0.03 * cm * 1000);
-//   steering::left_stop();
-//   steering::right_stop();
-// }
+namespace steering {
+constexpr float sensor_to_cm = (2 * 40) / 21;
 
-// void go_backward(uint16_t cm) {
-//   steering::set_left(255);
-//   steering::set_right(255);
-//   steering::left_backward();
-//   steering::right_backward();
-//   delay(0.03 * cm * 1000);
-//   steering::left_stop();
-//   steering::right_stop();
-// }
+struct drive {
+  device::motor& l;
+  device::motor& r;
+
+  device::sensor& ls;
+  device::sensor& rs;
+
+  void _go(uint16_t cm, void (device::motor::*l_direction)(), void (device::motor::*r_direction)()) {
+    ls.reset();
+    rs.reset();
+
+    (l.*l_direction)();
+    (r.*r_direction)();
+
+    uint16_t ticks = cm * sensor_to_cm;
+
+    bool lb = true;
+    bool rb = true;
+    while (lb || rb) {
+      if (lb && ls._counter >= ticks) {
+        l.stop();
+        lb = false;
+      }
+      if (rb && rs._counter >= ticks) {
+        r.stop();
+        rb = false;
+      }
+    }
+    ls.reset();
+    rs.reset();
+  }
+
+  void go_forward(uint16_t cm) {
+    _go(cm, &device::motor::forward, &device::motor::forward);
+  }
+
+  void go_backward(uint16_t cm) {
+    _go(cm, &device::motor::backward, &device::motor::backward);
+  }
+
+  void go_left(uint16_t cm) {
+    _go(cm, &device::motor::backward, &device::motor::forward);
+  }
+
+  void go_right(uint16_t cm) {
+    _go(cm, &device::motor::forward, &device::motor::backward);
+  }
+};
+}
+
+
 
 void setup() {
   pinMode(pins::builtin_led, OUTPUT);
@@ -120,13 +159,15 @@ ISR(PCINT1_vect) {
 
 void loop() {
   Serial.begin(9600);
-  Timer1.initialize();
+  Timer1.initialize();  // blokuje 9 i 10
   while (!Serial)
     ;
 
 
   PCICR = 0x02;
   PCMSK1 |= (1 << PCINT8) | (1 << PCINT9);
+
+  // podzielona inicjalizacja sensorleft i right przez ISR
 
   device::motor left_motor = {
     ._pin_enable = pins::with_mode(pins::en_a, OUTPUT),
@@ -149,20 +190,16 @@ void loop() {
   // digitalWrite(pins::sensor_left, HIGH);
   // digitalWrite(pins::sensor_right, HIGH);
 
-  // auto& motor = left_motor;
-
   left_motor.set_power(255);
   right_motor.set_power(255);
 
-  // left_motor.forward();
-  // right_motor.forward();
+  steering::drive drive = { .l = left_motor, .r = right_motor, .ls = sensor_left, .rs = sensor_right };
 
   for (;;) {
 
     // // go_forward(50);
     // motor.forward();
     // delay(1000);
-
 
     // // beeper::start(100000);
     // // go_backward(50);
@@ -175,12 +212,20 @@ void loop() {
 
     // Serial.println(cnt0);
 
-    Serial.print("l: ");
-    Serial.print(sensor_left._counter);
-    Serial.print("r: ");
-    Serial.print(sensor_right._counter);
-    Serial.print("\n");
-    delay(100);
-    
+    // Serial.print("l: ");
+    // Serial.print(sensor_left._counter);
+    // Serial.print("r: ");
+    // Serial.print(sensor_right._counter);
+    // Serial.print("\n");
+    // delay(100);
+
+    drive.go_forward(40);
+    delay(500);
+    drive.go_backward(40);
+    delay(500);
+    drive.go_left(40);
+    delay(500);
+    drive.go_right(40);
+    delay(500);
   }
 }
