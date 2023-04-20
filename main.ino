@@ -1,32 +1,39 @@
 #include <stdint.h>
 
+namespace config {
+constexpr bool enable_logs = true;
+}
+
 namespace pins {
 //misc
 constexpr uint8_t builtin_led = 13;
 
 // silniki
 // 11 10 9 6 5 3 orginalnie ale 9 10 sa uzywane przez timer1
+// pasek lewo bialy szary folet niebieski zielony zolty prawo
 constexpr uint8_t en_a = 6;  // bialy lewo 1.0
-constexpr uint8_t in_1 = 7;
-constexpr uint8_t in_2 = 8;
-constexpr uint8_t in_3 = 2;
-constexpr uint8_t in_4 = 4;
+constexpr uint8_t in_1 = 7;  // szary
+constexpr uint8_t in_2 = 8;  // filet
+constexpr uint8_t in_3 = 2;  // niebieski
+constexpr uint8_t in_4 = 4;  // zielony
 constexpr uint8_t en_b = 5;  // zolty prawo 1.0
 
 // tick_sensor
 // brazowy vcc
 // czerwony gnd
-constexpr uint8_t counter_a0 = A0;  // pomaranczowy
+constexpr uint8_t counter_a0 = A0;  // pomaranczowy prawy
 // szary vcc
 // fioletowy gnd
-constexpr uint8_t counter_a1 = A1;  // niebieski
+constexpr uint8_t counter_a1 = A1;  // niebieski lewy
 
 // sonar
-constexpr uint8_t sonar_trigger = A5;  // TODO color
-constexpr uint8_t sonar_echo = A4;     // TODO color
+constexpr uint8_t sonar_trigger = A5;  // opisany pin
+constexpr uint8_t sonar_echo = A4;     // opisany pin
 
 //servo
-constexpr uint8_t servo_control = 11;  // TODO color
+// carny gnd
+// czerwony vcc
+constexpr uint8_t servo_control = 11;  // zolty
 }
 
 namespace pins {
@@ -142,6 +149,21 @@ public:
     return &data_[N];
   }
 };
+
+template<typename ForwardIt, typename Compare>
+ForwardIt max_element(ForwardIt first, ForwardIt last, Compare less) {
+  if (first == last)
+    return last;
+
+  ForwardIt largest = first;
+  ++first;
+
+  for (; first != last; ++first)
+    if (less(*largest, *first))
+      largest = first;
+
+  return largest;
+}
 }
 
 namespace counters {
@@ -225,8 +247,6 @@ struct button {
 };
 
 struct tick_sensor {
-  static constexpr float tick_to_cm = (2 * 40.) / 21.;
-
   volatile counters::tick_t& counter_;
 };
 
@@ -283,6 +303,10 @@ public:
   void set_angle(uint16_t deg) {
     s_.write(deg);
   }
+
+  void reset_position() {
+    s_.write(90);
+  }
 };
 }
 
@@ -295,6 +319,9 @@ struct blocking_steering {
   device::tick_sensor& ls_;
   device::tick_sensor& rs_;
 
+  static constexpr float tick_to_cm = (40.) / 21.;
+  static constexpr float deg_to_cm = 0.3;
+
   void _go(void (device::motor::*l_action)(), void (device::motor::*r_action)(), uint16_t cm) {
     ls_.counter_ = 0;
     rs_.counter_ = 0;
@@ -302,7 +329,7 @@ struct blocking_steering {
     (l_.*l_action)();
     (r_.*r_action)();
 
-    counters::tick_t ticks = cm * device::tick_sensor::tick_to_cm;
+    counters::tick_t ticks = cm * tick_to_cm;
 
     bool lb = true;
     bool rb = true;
@@ -316,6 +343,14 @@ struct blocking_steering {
         rb = false;
       }
     }
+
+    if (config::enable_logs) {
+      Serial.print("l counter: ");
+      Serial.print(ls_.counter_);
+      Serial.print("r counter: ");
+      Serial.print(rs_.counter_);
+      Serial.print("\n");
+    }
     ls_.counter_ = 0;
     rs_.counter_ = 0;
   }
@@ -328,17 +363,27 @@ struct blocking_steering {
     _go(&device::motor::backward, &device::motor::backward, cm);
   }
 
-  void rotate_left(uint16_t cm) {
-    _go(&device::motor::backward, &device::motor::forward, cm);
+  void rotate_left(uint16_t deg) {
+    _go(&device::motor::backward, &device::motor::forward, deg * deg_to_cm);
   }
 
-  void rotate_right(uint16_t cm) {
-    _go(&device::motor::forward, &device::motor::backward, cm);
+  void rotate_right(uint16_t deg) {
+    _go(&device::motor::forward, &device::motor::backward, deg * deg_to_cm);
+  }
+
+  void rotate(int16_t deg_to_left) {
+    if (deg_to_left >= 0) {
+      rotate_left(static_cast<uint16_t>(deg_to_left));
+    } else {
+      rotate_right(static_cast<uint16_t>(-deg_to_left));
+    }
   }
 };
 
 namespace constants {
-constexpr astd::array<uint16_t, 5> positions = { 0u, 45u, 90u, 135u, 180u };  // if i make it constexpr static member in blocking_sonar_tower compiler crashes XD
+// left to right
+// if i make it constexpr static member in blocking_sonar_tower compiler crashes XD
+constexpr astd::array<uint16_t, 5> positions = { 180u, 135u, 90u, 45u, 0u };
 }
 struct blocking_sonar_tower {
   device::sonar& sonar_;
@@ -351,28 +396,25 @@ struct blocking_sonar_tower {
     for (uint8_t i{}; i < positions.size(); ++i) {
       uint8_t deg = positions[i];
       servo_.set_angle(deg);
-      delay(100);  // time to allow servo to rotate??
+      delay(500);  // time to allow servo to rotate
       auto m = sonar_.measure();
       results[i] = m;
     }
 
+    servo_.reset_position();
+    if (config::enable_logs) {
+      for (uint8_t i{}; i < driver::constants::positions.size(); ++i) {
+        Serial.print("angle ");
+        Serial.print(driver::constants::positions[i]);
+        Serial.print(" -> ");
+        Serial.print(results[i].first);
+      }
+      Serial.print("\n");
+    }
     return results;
   }
 };
 
-}
-
-// TODO przetestuj sonar
-// TODO przetestuj dokladna odleglosc jechania
-// TODO przetestuj dokladny obrot i wymysl mnoznik
-// TODO przetestuj serwo
-
-// TODO kalibracja kolek??
-// TODO decydowanie kierunku
-// TODO zatrzymywanie przed przeszkoda, rozgladanie sie, podejmowanie decyzji, skrecanie, kontynuuowanie
-
-namespace config {
-bool print_debug = true;
 }
 
 void setup() {
@@ -380,6 +422,12 @@ void setup() {
   digitalWrite(pins::builtin_led, HIGH);
   delay(2000);
   digitalWrite(pins::builtin_led, LOW);
+}
+
+void panic() {
+  beeper::start(100000);
+  for (;;)
+    ;
 }
 
 void loop() {
@@ -437,32 +485,99 @@ void loop() {
   right_motor.set_power(255);
   for (;;) {
 
-    drive.forward(40);
+    // program rozgladania sie
+    delay(500);  // allow car to stabilize its position
     const auto measurements = tower.measure();
-    delay(500);
-    beeper::start(100000);
-    drive.backward(40);
-    beeper::stop();
-    delay(500);
-    drive.rotate_left(40);
-    delay(500);
-    drive.rotate_right(40);
-    delay(500);
+    auto decide = [&measurements]() -> astd::pair<int16_t, uint16_t> {
+      auto _iter = astd::max_element(measurements.begin(), measurements.end(), [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
+        if (l.second == device::sonar::error_reason::too_far) {
+          return false;
+        }
 
-    if constexpr (config::debug) {
-      Serial.print("l counter: ");
-      Serial.print(sensor_left.counter_);
-      Serial.print("r counter: ");
-      Serial.print(sensor_right.counter_);
-      Serial.print("\n");
-      for (uint8_t i{}; i < driver::constants::positions.size(); ++i) {
-        Serial.print("angle ");
-        Serial.print(driver::constants::positions[i]);
-        Serial.print(" -> ");
-        Serial.print(measurements[i].first);
+        if (r.second == device::sonar::error_reason::too_far) {
+          return true;
+        }
+
+        return l.first < r.first;
+      });
+      uint16_t _index = _iter - measurements.begin();
+      uint16_t _direction = driver::constants::positions[_index]; // left is 180 right is 0
+
+      int16_t direction = static_cast<int16_t>(_direction) - 90; // left is 90 right is -90
+      uint16_t distance = measurements[_index].first;
+      if (config::enable_logs) {
+        Serial.print("decision: {");
+        Serial.print(direction);
+        Serial.print(", ");
+        Serial.print(distance);
+        Serial.print("}\n");
       }
-      Serial.print("\n");
+      return { direction, distance };
+    };
+    auto d = decide();
+    auto& direction = d.first;
+    auto& distance = d.second;
+    delay(500);  // TODO test czy mozna bez
+    if (distance < 5) {
+      panic();
     }
-    // delay(100);
+    drive.rotate(direction);
+    drive.forward(distance * 0.9);
+
+    // drive.forward(40);
+    // delay(500);
+    // delay(500);
+    // beeper::start(100000);
+    // drive.backward(40);
+    // beeper::stop();
+    // delay(500);
+    // drive.rotate_left(45);
+    // delay(500);
+    // drive.rotate_right(45);
+    // delay(500);
+
+    // test synchronizacji odleglosci
+    // auto res = sonar.measure();
+    // uint16_t& cm = res.first;
+    // // uint16_t cm = 50;
+    // // Serial.println(cm);
+    // delay(2000);
+    // drive.forward(cm);
+    // delay(2000);
+    // drive.backward(cm);
+    // delay(2000);
+
+    // test na kierunki motora
+    // device::motor& m = right_motor;
+    // m.forward();
+    // delay(3000);
+    // beeper::start(100000);
+    // m.backward();
+    // beeper::stop();
+    // delay(3000);
+    // device::motor& m = left_motor;
+    // m.forward();
+    // delay(3000);
+    // beeper::start(100000);
+    // m.backward();
+    // beeper::stop();
+    // delay(3000);
+
+    // test na obrot
+    // drive.rotate_left(90);
+    // delay(1000);
+    // drive.rotate_right(90);
+    // delay(1000);
   }
 }
+
+// TODO kalibracja kolek??
+// TODO nie blokujace jezdzenie
+
+// przetestuj sonar - dziala odleglosc sie zgadza
+// przetestuj dokladna odleglosc jechania - zatrzymuje sie bezposrednio przed przeszkoda
+// przetestuj dokladny obrot i wymysl mnoznik
+// przetestuj serwo - dziala idealnie
+// decydowanie kierunku
+// zatrzymywanie przed przeszkoda, rozgladanie sie, podejmowanie decyzji, skrecanie, kontynuuowanie
+//   - rozglada sie, podejmuje decyzje, skreca, przejezdza 0.9 odl do przeszkody
