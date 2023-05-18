@@ -1,5 +1,6 @@
 #include <stdint.h>
-#include <stdio.h>
+
+// now it is c++20, use system avr-gcc and -std=c++20 in platform.txt
 
 namespace config {
 constexpr bool enable_logs = false;
@@ -12,12 +13,12 @@ constexpr uint8_t builtin_led = 13;
 // silniki
 // 11 10 9 6 5 3 orginalnie ale 9 10 sa uzywane przez timer1
 // pasek lewo bialy szary folet niebieski zielony zolty prawo
-constexpr uint8_t en_a = 6;  // bialy lewo 1.0
-constexpr uint8_t in_1 = 7;  // szary
-constexpr uint8_t in_2 = 8;  // filet
-constexpr uint8_t in_3 = 2;  // niebieski
-constexpr uint8_t in_4 = 4;  // zielony
-constexpr uint8_t en_b = 5;  // zolty prawo 1.0
+constexpr uint8_t eng_1 = 6;  // bialy lewo 1.0
+constexpr uint8_t eng_2 = 8;  // szary
+constexpr uint8_t eng_3 = 7;  // filet
+constexpr uint8_t eng_4 = 2;  // niebieski
+constexpr uint8_t eng_5 = 4;  // zielony
+constexpr uint8_t eng_6 = 5;  // zolty prawo 1.0
 
 // tick_sensor
 // brazowy vcc
@@ -176,19 +177,18 @@ volatile tick_t g_cnt_a0 = {};
 volatile tick_t g_cnt_a1 = {};
 
 void init() {
-  pinMode(pins::counter_a0, INPUT);
-  pinMode(pins::counter_a1, INPUT);
-
-  PCICR = 0x02;                             // set PCIE1 bit in PCICR to enable pin 14..8 interrupts
-  PCMSK1 |= (1 << PCINT8) | (1 << PCINT9);  // run ISR for 9 8 pins
+  // set PCIE1 bit in PCICR to enable pin 14..8 interrupts
+  PCICR = 0x02;
+  // run ISR for 9 8 pins
+  PCMSK1 = PCMSK1 | ((1 << PCINT8) | (1 << PCINT9));
 }
 
 ISR(PCINT1_vect) {
   if ((PINC & (1 << PC0)))
-    counters::g_cnt_a0++;
+    counters::g_cnt_a0 = counters::g_cnt_a0 + 1;
 
   if ((PINC & (1 << PC1)))
-    counters::g_cnt_a1++;
+    counters::g_cnt_a1 = counters::g_cnt_a1 + 1;
 }
 
 // no remove_cv -> no template
@@ -208,6 +208,19 @@ struct cache {
     return ct_ - cache_;
   }
 };
+
+struct wrapper {
+  volatile tick_t& ct_;
+
+  void reset() {
+    ct_ = 0;
+  }
+
+  tick_t current() {
+    return ct_;
+  }
+};
+
 }
 
 #include <TimerOne.h>
@@ -238,10 +251,33 @@ void start(uint32_t us) {
 
 namespace device {
 
+struct tick_sensor {
+  struct pinout {
+    uint8_t counter_;
+  };
+  const pinout pins_;
+  counters::cache ct_;
+
+  void reset() {
+    ct_.reset();
+  }
+
+  auto current() -> counters::tick_t {
+    return ct_.current();
+  }
+};
+
 struct motor {
-  const uint8_t pin_enable_;
-  const uint8_t pin_forward_;
-  const uint8_t pin_backward_;
+  struct pinout {
+    uint8_t enable_;
+    uint8_t forward_;
+    uint8_t backward_;
+  };
+
+  const pinout pins_;
+
+  motor(pinout pin)
+    : pins_(pin) {}
 
   enum class states : uint8_t {
     STOP = 0,
@@ -249,48 +285,36 @@ struct motor {
     BACKWARD,
   };
 
-  uint8_t power_;
-  states state_;
+  states state_ {};
+  uint8_t power_ {};
 
   void set_power(uint8_t power) {
     power_ = power;
-    analogWrite(pin_enable_, power);
+    analogWrite(pins_.enable_, power);
   }
 
   void forward() {
     state_ = states::FORWARD;
-    digitalWrite(pin_backward_, LOW);
-    digitalWrite(pin_forward_, HIGH);
+    digitalWrite(pins_.backward_, LOW);
+    digitalWrite(pins_.forward_, HIGH);
   }
 
   void backward() {
     state_ = states::BACKWARD;
-    digitalWrite(pin_forward_, LOW);
-    digitalWrite(pin_backward_, HIGH);
+    digitalWrite(pins_.forward_, LOW);
+    digitalWrite(pins_.backward_, HIGH);
   }
 
   void stop() {
     state_ = states::STOP;
-    digitalWrite(pin_forward_, LOW);
-    digitalWrite(pin_backward_, LOW);
+    digitalWrite(pins_.forward_, LOW);
+    digitalWrite(pins_.backward_, LOW);
   }
 };
 
-struct button {
-  const uint8_t input_pin_;
-};
-
-struct tick_sensor {
-  counters::cache counter_;
-
-  void reset() {
-    counter_.reset();
-  }
-
-  auto current() -> counters::tick_t {
-    return counter_.current();
-  }
-};
+// struct button {
+//   const uint8_t input_pin_;
+// };
 
 struct sonar {
   static float constexpr _sound_speed_ms = 343.8;                      // m/s 20C
@@ -303,29 +327,36 @@ struct sonar {
   static float constexpr min_cm = min_us * cm_per_pulse;
   static float constexpr max_cm = max_us * cm_per_pulse;
 
-  const uint8_t trigger_pin_;
-  const uint8_t echo_pin_;
+  struct pinout {
+    uint8_t trigger_pin_;
+    uint8_t echo_pin_;
+  };
+  const pinout pins_;
+
+  sonar(pinout pins)
+    : pins_{ pins } {}
 
   enum class error_reason : uint8_t {
-    none,
-    too_close,
-    too_far
+    NONE,
+    TOO_CLOSE,
+    TOO_FAR
   };
 
   auto measure() -> astd::pair<uint16_t, error_reason> {
-    digitalWrite(trigger_pin_, HIGH);
+    digitalWrite(pins_.trigger_pin_, HIGH);
     delayMicroseconds(15);  // 10 minimum
-    digitalWrite(trigger_pin_, LOW);
+    digitalWrite(pins_.trigger_pin_, LOW);
 
-    uint32_t pulse = pulseIn(echo_pin_, HIGH, 30000);  // min 150us too close, max 25000 too far, 38000 no obstacle
+    // min 150us too close, max 25000 too far, 38000 no obstacle
+    uint32_t pulse = pulseIn(pins_.echo_pin_, HIGH, 30000);
 
     if (pulse < min_us) {
-      return { 0, error_reason::too_close };
+      return { 0, error_reason::TOO_CLOSE };
     } else if (pulse > max_us) {
-      return { 0, error_reason::too_far };
+      return { 0, error_reason::TOO_FAR };
     } else {
       uint16_t meas = pulse * cm_per_pulse;
-      return { meas, error_reason::none };
+      return { meas, error_reason::NONE };
     }
   }
 };
@@ -335,15 +366,20 @@ struct sonar {
 #include <Servo.h>
 namespace device {
 struct servo {
-  const uint8_t pin_control_;
+  struct pinout {
+    uint8_t control_;
+  };
+  const pinout pins_;
 
 private:
   Servo s_;
 public:
-  servo(uint8_t pin_control)
-    : pin_control_{ pin_control } {
-    s_.attach(pin_control_);
+
+  servo(pinout pins)
+    : pins_{ pins } {
+    s_.attach(pins.control_);
   }
+
 
   void set_angle(uint16_t deg) {
     s_.write(deg);
@@ -415,7 +451,7 @@ struct steering_blocking {
       // FIXME if counter is badly connected, it loops forever
     }
 
-    if (config::enable_logs) {
+    if constexpr (config::enable_logs) {
       Serial.print("l counter: ");
       Serial.print(ls_.current());
       Serial.print("r counter: ");
@@ -451,20 +487,17 @@ struct steering_blocking {
   }
 };
 
-namespace constants {
-// left to right
-// if i make it constexpr static member in blocking_sonar_tower compiler crashes XD
-constexpr astd::array<uint16_t, 5> _positions = { 180u, 135u, 90u, 45u, 0u };
-}
-struct blocking_sonar_tower {
+struct sonar_tower_blocking {
   device::sonar& sonar_;
   device::servo& servo_;
 
-  auto measure() -> astd::array<decltype(sonar_.measure()), constants::_positions.size()> {
+  constexpr static astd::array<uint16_t, 5> _positions = { 180u, 135u, 90u, 45u, 0u };
+
+  auto measure() -> astd::array<decltype(sonar_.measure()), _positions.size()> {
     decltype(measure()) results{};
 
-    for (uint8_t i{}; i < constants::_positions.size(); ++i) {
-      uint8_t deg = constants::_positions[i];
+    for (uint8_t i{}; i < _positions.size(); ++i) {
+      uint8_t deg = _positions[i];
       servo_.set_angle(deg);
       delay(300);  // time to allow servo to rotate
       auto m = sonar_.measure();
@@ -472,15 +505,17 @@ struct blocking_sonar_tower {
     }
 
     servo_.reset_position();
-    if (config::enable_logs) {
-      for (uint8_t i{}; i < constants::_positions.size(); ++i) {
+
+    if constexpr (config::enable_logs) {
+      for (uint8_t i{}; i < _positions.size(); ++i) {
         Serial.print("angle=");
-        Serial.print(constants::_positions[i]);
+        Serial.print(_positions[i]);
         Serial.print(",result=");
         Serial.print(results[i].first);
         Serial.print("\n");
       }
     }
+
     return results;
   }
 };
@@ -525,8 +560,8 @@ struct velocity_counter {
   }
 
   void probe() {
-    auto ticks = cache_.current();
-    s_.add(ticks);
+    auto cms = cache_.current() * device::sonar::cm_per_pulse;
+    s_.add(cms);
   }
 };
 }
@@ -554,7 +589,7 @@ void loop() {
   // beeper::start(100000);
   // lcd.uwu_message();
 
-  if (config::enable_logs) {
+  if constexpr (config::enable_logs) {
     Serial.begin(9600);
     while (!Serial)
       ;
@@ -562,20 +597,24 @@ void loop() {
 
 
   counters::init();
-  device::tick_sensor sensor_left{ counters::cache{ counters::g_cnt_a0 } };
-  device::tick_sensor sensor_right{ counters::cache{ counters::g_cnt_a1 } };
-  device::motor motor_left{
-    .pin_enable_ = pins::with_mode(pins::en_a, OUTPUT),
-    .pin_forward_ = pins::with_mode(pins::in_1, OUTPUT),
-    .pin_backward_ = pins::with_mode(pins::in_2, OUTPUT),
-  };
-  device::motor motor_right{
-    .pin_enable_ = pins::with_mode(pins::en_b, OUTPUT),
-    .pin_forward_ = pins::with_mode(pins::in_4, OUTPUT),
-    .pin_backward_ = pins::with_mode(pins::in_3, OUTPUT),
-  };
-  driver::velocity_counter speedometer_left = { .cache_ = counters::cache{ counters::g_cnt_a0 }, .motor_ = motor_left };
-  driver::velocity_counter speedometer_right = { .cache_ = counters::cache{ counters::g_cnt_a0 }, .motor_ = motor_right };
+  device::tick_sensor sensor_left(
+    { .counter_ = pins::with_mode(pins::counter_a0, INPUT) },
+    counters::cache{ counters::g_cnt_a0 });
+  device::tick_sensor sensor_right(
+    { .counter_ = pins::with_mode(pins::counter_a1, INPUT) },
+    counters::cache{ counters::g_cnt_a1 });
+  device::motor motor_left({
+    .enable_ = pins::with_mode(pins::eng_1, OUTPUT),
+    .forward_ = pins::with_mode(pins::eng_2, OUTPUT),
+    .backward_ = pins::with_mode(pins::eng_3, OUTPUT),
+  });
+  device::motor motor_right({
+    .enable_ = pins::with_mode(pins::eng_6, OUTPUT),
+    .forward_ = pins::with_mode(pins::eng_5, OUTPUT),
+    .backward_ = pins::with_mode(pins::eng_4, OUTPUT),
+  });
+  driver::velocity_counter speedometer_left(counters::cache{ counters::g_cnt_a0 }, motor_left);
+  driver::velocity_counter speedometer_right(counters::cache{ counters::g_cnt_a1 }, motor_right);
 
   driver::steering_blocking drive{
     .l_ = motor_left,
@@ -584,14 +623,12 @@ void loop() {
     .rs_ = sensor_right
   };
 
-  device::sonar sonar{
-    .trigger_pin_ = pins::with_mode(pins::sonar_trigger, OUTPUT),
-    .echo_pin_ = pins::with_mode(pins::sonar_echo, INPUT)
-  };
-  device::servo servo{
-    .pin_control = pins::with_mode(pins::servo_control, OUTPUT)
-  };
-  driver::blocking_sonar_tower tower{
+  device::sonar sonar({ .trigger_pin_ = pins::with_mode(pins::sonar_trigger, OUTPUT),
+                        .echo_pin_ = pins::with_mode(pins::sonar_echo, INPUT) });
+  device::servo servo({
+    .control_ = pins::with_mode(pins::servo_control, OUTPUT),
+  });
+  driver::sonar_tower_blocking tower{
     .sonar_ = sonar,
     .servo_ = servo
   };
@@ -613,67 +650,126 @@ void loop() {
   motor_right.set_power(255);
 
   {
-    // test connectorow
+    // connector test
+    lcd.lcd_.clear();
+    lcd.lcd_.setCursor(0, 0);
+    lcd.lcd_.print("test czujnikow");
+
     motor_left.forward();
     motor_right.backward();
-    delay(1000);
+
+    delay(800);
+
+    motor_left.stop();
+    motor_right.stop();
+
     if (sensor_left.current() == 0 && sensor_right.current() == 0) {
+      lcd.lcd_.setCursor(0, 1);
+      lcd.lcd_.print("failed");
       panic();
+    } else {
+      lcd.lcd_.setCursor(0, 1);
+      lcd.lcd_.print("ok");
     }
+
+    delay(1000);
+    lcd.clear();
   }
+
+  {
+    // test obrotu
+    lcd.lcd_.clear();
+    lcd.lcd_.setCursor(0, 0);
+    lcd.lcd_.print("test obrotu");
+
+    drive.rotate_left(90);
+    delay(1000);
+    drive.rotate_right(90);
+
+    lcd.lcd_.setCursor(0, 1);
+    lcd.lcd_.print("???");
+    delay(1000);
+
+    lcd.clear();
+  }
+
   for (;;) {
 
     // program rozgladania sie
     const auto measurements = tower.measure();
+
     auto furthest_away = [&measurements]() -> astd::pair<int16_t, uint16_t> {
-      auto _iter = astd::max_element(measurements.begin(), measurements.end(), [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
-        if (l.second == device::sonar::error_reason::too_far) {
-          return false;
-        }
+      auto _iter = astd::max_element(
+        measurements.begin(),
+        measurements.end(),
+        [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
+          if (l.second == device::sonar::error_reason::TOO_FAR) {
+            return false;
+          }
 
-        if (r.second == device::sonar::error_reason::too_far) {
-          return true;
-        }
+          if (r.second == device::sonar::error_reason::TOO_FAR) {
+            return true;
+          }
 
-        return l.first < r.first;
-      });
+          return l.first < r.first;
+        });
+
       uint16_t _index = _iter - measurements.begin();
-      uint16_t _direction = driver::constants::_positions[_index];  // left is 180 right is 0
-
-      int16_t direction = static_cast<int16_t>(_direction) - 90;  // left is 90 right is -90
+      int16_t direction = static_cast<int16_t>(driver::sonar_tower_blocking::_positions[_index]) - 90;
       uint16_t distance = measurements[_index].first;
-      if (config::enable_logs) {
+
+      if constexpr (config::enable_logs) {
         Serial.print("decision: {");
         Serial.print(direction);
         Serial.print(", ");
         Serial.print(distance);
         Serial.print("}\n");
       }
+
       return { direction, distance };
     };
     auto d = furthest_away();
+
+    // delay(500);
     auto& direction = d.first;
     auto& distance = d.second;
-    // delay(500);  // TODO test czy mozna bez
     drive.rotate(direction);
     // drive.forward(distance * 0.9);
     drive.forward(10);
-    // delay(500);  // allow car to stabilize its position
+    // delay(500);
+
     speedometer_left.probe();
     speedometer_right.probe();
     {
-      double l = speedometer_left.current();
-      double r = speedometer_right.current();
-      char text_left[16] = { 0 };
-      char text_right[16] = { 0 };
-      dtostrf(l, 3, 2, text_left);
-      dtostrf(r, 3, 2, text_right);
+      double l = speedometer_left.current() * 1000;
+      double r = speedometer_right.current() * 1000;
+
       // FIXME: make wrapper
       lcd.lcd_.clear();
-      lcd.lcd_.setCursor(0, 0);
-      lcd.lcd_.print(text_left);
-      lcd.lcd_.setCursor(0, 1);
-      lcd.lcd_.print(text_right);
+      {
+        char text[16] = { 0 };
+        dtostrf(l, 3, 2, text);
+        lcd.lcd_.setCursor(0, 0);
+        lcd.lcd_.print(text);
+      }
+      {
+        char text[16] = { 0 };
+        dtostrf(r, 3, 2, text);
+        lcd.lcd_.setCursor(0, 1);
+        lcd.lcd_.print(text);
+      }
+      {
+        char text[16] = { 0 };
+        dtostrf(double(distance), 3, 2, text);
+        lcd.lcd_.setCursor(8, 0);
+        lcd.lcd_.print(text);
+      }
+      {
+        char text[16] = { 0 };
+        dtostrf(double(direction), 3, 2, text);
+        lcd.lcd_.setCursor(8, 1);
+        lcd.lcd_.print(text);
+      }
     }
 
     {
