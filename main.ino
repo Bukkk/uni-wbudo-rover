@@ -1,7 +1,8 @@
 #include <stdint.h>
+#include <stdio.h>
 
 namespace config {
-constexpr bool enable_logs = true;
+constexpr bool enable_logs = false;
 }
 
 namespace pins {
@@ -21,10 +22,10 @@ constexpr uint8_t en_b = 5;  // zolty prawo 1.0
 // tick_sensor
 // brazowy vcc
 // czerwony gnd
-constexpr uint8_t counter_a0 = A0;  // pomaranczowy prawy
+constexpr uint8_t counter_a1 = A1;  // pomaranczowy prawy
 // szary vcc
 // fioletowy gnd
-constexpr uint8_t counter_a1 = A1;  // niebieski lewy
+constexpr uint8_t counter_a0 = A0;  // niebieski lewy
 
 // sonar
 constexpr uint8_t sonar_trigger = A5;  // opisany pin
@@ -32,8 +33,10 @@ constexpr uint8_t sonar_echo = A4;     // opisany pin
 
 //servo
 // carny gnd
-// czerwony vcc
 constexpr uint8_t servo_control = 11;  // zolty
+// czerwony vcc
+
+// wyswietlacz sda scl vcc gnd
 }
 
 namespace pins {
@@ -169,8 +172,8 @@ ForwardIt max_element(ForwardIt first, ForwardIt last, Compare less) {
 namespace counters {
 using tick_t = uint32_t;
 
-volatile uint32_t g_cnt_a0 = {};
-volatile uint32_t g_cnt_a1 = {};
+volatile tick_t g_cnt_a0 = {};
+volatile tick_t g_cnt_a1 = {};
 
 void init() {
   pinMode(pins::counter_a0, INPUT);
@@ -187,13 +190,31 @@ ISR(PCINT1_vect) {
   if ((PINC & (1 << PC1)))
     counters::g_cnt_a1++;
 }
+
+// no remove_cv -> no template
+struct cache {
+  tick_t cache_ = {};
+  volatile tick_t& ct_;
+
+
+  cache(volatile tick_t& ct)
+    : ct_(ct) {}
+
+  void reset() {
+    cache_ = ct_;
+  }
+
+  tick_t current() {
+    return ct_ - cache_;
+  }
+};
 }
 
 #include <TimerOne.h>
 namespace beeper {
 
 void init() {
-  Timer1.initialize();  // is using 9 i 10??
+  Timer1.initialize();  // is using pins 9 and 10
 }
 
 void beep() {
@@ -222,21 +243,34 @@ struct motor {
   const uint8_t pin_forward_;
   const uint8_t pin_backward_;
 
+  enum class states : uint8_t {
+    STOP = 0,
+    FORWARD,
+    BACKWARD,
+  };
+
+  uint8_t power_;
+  states state_;
+
   void set_power(uint8_t power) {
+    power_ = power;
     analogWrite(pin_enable_, power);
   }
 
   void forward() {
+    state_ = states::FORWARD;
     digitalWrite(pin_backward_, LOW);
     digitalWrite(pin_forward_, HIGH);
   }
 
   void backward() {
+    state_ = states::BACKWARD;
     digitalWrite(pin_forward_, LOW);
     digitalWrite(pin_backward_, HIGH);
   }
 
   void stop() {
+    state_ = states::STOP;
     digitalWrite(pin_forward_, LOW);
     digitalWrite(pin_backward_, LOW);
   }
@@ -247,14 +281,27 @@ struct button {
 };
 
 struct tick_sensor {
-  volatile counters::tick_t& counter_;
+  counters::cache counter_;
+
+  void reset() {
+    counter_.reset();
+  }
+
+  auto current() -> counters::tick_t {
+    return counter_.current();
+  }
 };
 
 struct sonar {
   static float constexpr _sound_speed_ms = 343.8;                      // m/s 20C
   static float constexpr _sound_speed_mmus = _sound_speed_ms * 0.001;  // mm/us
-  static float constexpr mm_to_delay = _sound_speed_mmus * 0.5;        // 0.5 sound travels twice the distance from sensor to obstacle
-  static float constexpr cm_to_delay = mm_to_delay * 0.1;
+  static float constexpr mm_per_pulse = _sound_speed_mmus * 0.5;       // 0.5 sound travels twice the distance from sensor to obstacle
+  static float constexpr cm_per_pulse = mm_per_pulse * 0.1;
+
+  static uint16_t constexpr min_us = 150;
+  static uint16_t constexpr max_us = 25000;
+  static float constexpr min_cm = min_us * cm_per_pulse;
+  static float constexpr max_cm = max_us * cm_per_pulse;
 
   const uint8_t trigger_pin_;
   const uint8_t echo_pin_;
@@ -266,21 +313,19 @@ struct sonar {
   };
 
   auto measure() -> astd::pair<uint16_t, error_reason> {
-    using measurement_t = decltype(measure());
-
     digitalWrite(trigger_pin_, HIGH);
     delayMicroseconds(15);  // 10 minimum
     digitalWrite(trigger_pin_, LOW);
 
-    uint32_t pulse = pulseIn(echo_pin_, HIGH, 35000);  // min 150us too close, max 25000 too far, 38000 no obstacle
+    uint32_t pulse = pulseIn(echo_pin_, HIGH, 30000);  // min 150us too close, max 25000 too far, 38000 no obstacle
 
-    if (pulse < 150) {
-      return measurement_t{ 0, error_reason::too_close };
-    } else if (pulse > 25000) {
-      return measurement_t{ 0, error_reason::too_far };
+    if (pulse < min_us) {
+      return { 0, error_reason::too_close };
+    } else if (pulse > max_us) {
+      return { 0, error_reason::too_far };
     } else {
-      uint16_t meas = pulse * cm_to_delay;
-      return measurement_t{ meas, error_reason::none };
+      uint16_t meas = pulse * cm_per_pulse;
+      return { meas, error_reason::none };
     }
   }
 };
@@ -310,9 +355,33 @@ public:
 };
 }
 
+#include "LiquidCrystal_I2C.h"
+namespace device {
+
+struct lcd_wrapper {
+  LiquidCrystal_I2C lcd_ = LiquidCrystal_I2C(0x27, 16, 2);
+
+  void init() {
+    lcd_.init();
+    lcd_.backlight();
+  }
+
+  void clear() {
+    lcd_.clear();
+  }
+
+  void uwu_message() {
+    lcd_.setCursor(0, 0);
+    lcd_.print("stiww pwepawing!");
+    lcd_.setCursor(0, 1);
+    lcd_.print("touwch my eaws:3");
+  }
+};
+}
+
 namespace driver {
 
-struct blocking_steering {
+struct steering_blocking {
   device::motor& l_;
   device::motor& r_;
 
@@ -323,8 +392,8 @@ struct blocking_steering {
   static constexpr float deg_to_cm = 0.3;
 
   void _go(void (device::motor::*l_action)(), void (device::motor::*r_action)(), uint16_t cm) {
-    ls_.counter_ = 0;
-    rs_.counter_ = 0;
+    ls_.reset();
+    rs_.reset();
 
     (l_.*l_action)();
     (r_.*r_action)();
@@ -334,25 +403,27 @@ struct blocking_steering {
     bool lb = true;
     bool rb = true;
     while (lb || rb) {
-      if (lb && ls_.counter_ >= ticks) {
+      if (lb && ls_.current() >= ticks) {
         l_.stop();
         lb = false;
       }
-      if (rb && rs_.counter_ >= ticks) {
+      if (rb && rs_.current() >= ticks) {
         r_.stop();
         rb = false;
       }
+
+      // FIXME if counter is badly connected, it loops forever
     }
 
     if (config::enable_logs) {
       Serial.print("l counter: ");
-      Serial.print(ls_.counter_);
+      Serial.print(ls_.current());
       Serial.print("r counter: ");
-      Serial.print(rs_.counter_);
+      Serial.print(rs_.current());
       Serial.print("\n");
     }
-    ls_.counter_ = 0;
-    rs_.counter_ = 0;
+    // ls_.reset();
+    // rs_.reset();
   }
 
   void forward(uint16_t cm) {
@@ -383,38 +454,88 @@ struct blocking_steering {
 namespace constants {
 // left to right
 // if i make it constexpr static member in blocking_sonar_tower compiler crashes XD
-constexpr astd::array<uint16_t, 5> positions = { 180u, 135u, 90u, 45u, 0u };
+constexpr astd::array<uint16_t, 5> _positions = { 180u, 135u, 90u, 45u, 0u };
 }
 struct blocking_sonar_tower {
   device::sonar& sonar_;
   device::servo& servo_;
 
-  auto measure() -> astd::array<astd::pair<uint16_t, device::sonar::error_reason>, 5> {
+  auto measure() -> astd::array<decltype(sonar_.measure()), constants::_positions.size()> {
     decltype(measure()) results{};
-    using constants::positions;
 
-    for (uint8_t i{}; i < positions.size(); ++i) {
-      uint8_t deg = positions[i];
+    for (uint8_t i{}; i < constants::_positions.size(); ++i) {
+      uint8_t deg = constants::_positions[i];
       servo_.set_angle(deg);
-      delay(500);  // time to allow servo to rotate
+      delay(300);  // time to allow servo to rotate
       auto m = sonar_.measure();
       results[i] = m;
     }
 
     servo_.reset_position();
     if (config::enable_logs) {
-      for (uint8_t i{}; i < driver::constants::positions.size(); ++i) {
-        Serial.print("angle ");
-        Serial.print(driver::constants::positions[i]);
-        Serial.print(" -> ");
+      for (uint8_t i{}; i < constants::_positions.size(); ++i) {
+        Serial.print("angle=");
+        Serial.print(constants::_positions[i]);
+        Serial.print(",result=");
         Serial.print(results[i].first);
+        Serial.print("\n");
       }
-      Serial.print("\n");
     }
     return results;
   }
 };
 
+}
+
+namespace statistics {
+template<typename T, typename Time>
+double calc_estimate(T now, T last, Time t_now, Time t_last) {
+  auto d = now - last;
+  auto dt = t_now - t_last;
+  return dt != 0 ? double(d) / dt : 0.;
+}
+
+template<typename T>
+struct simple {
+  T now, last;
+  decltype(millis()) t_now, t_last;
+
+  void add(T n) {
+    last = now;
+    now = n;
+    t_last = t_now;
+    t_now = millis();
+  }
+
+  auto calc() -> double {
+    return calc_estimate(now, last, t_now, t_last);
+  }
+};
+}
+
+namespace driver {
+struct velocity_counter {
+  counters::cache cache_;
+  device::motor& motor_;
+  statistics::simple<counters::tick_t> s_;
+
+  double current() {
+    auto v = s_.calc();
+    return motor_.state_ == device::motor::states::BACKWARD ? -v : v;
+  }
+
+  void probe() {
+    auto ticks = cache_.current();
+    s_.add(ticks);
+  }
+};
+}
+
+
+void panic() {
+  beeper::start(100000);
+  for (;;)
+    ;
 }
 
 void setup() {
@@ -424,36 +545,41 @@ void setup() {
   digitalWrite(pins::builtin_led, LOW);
 }
 
-void panic() {
-  beeper::start(100000);
-  for (;;)
-    ;
-}
-
 void loop() {
-  Serial.begin(9600);
-  while (!Serial)
-    ;
-
   beeper::init();
 
-  counters::init();
-  device::tick_sensor sensor_left{ counters::g_cnt_a0 };
-  device::tick_sensor sensor_right{ counters::g_cnt_a1 };
+  device::lcd_wrapper lcd{};
+  lcd.init();
 
-  device::motor left_motor{
+  // beeper::start(100000);
+  // lcd.uwu_message();
+
+  if (config::enable_logs) {
+    Serial.begin(9600);
+    while (!Serial)
+      ;
+  }
+
+
+  counters::init();
+  device::tick_sensor sensor_left{ counters::cache{ counters::g_cnt_a0 } };
+  device::tick_sensor sensor_right{ counters::cache{ counters::g_cnt_a1 } };
+  device::motor motor_left{
     .pin_enable_ = pins::with_mode(pins::en_a, OUTPUT),
     .pin_forward_ = pins::with_mode(pins::in_1, OUTPUT),
     .pin_backward_ = pins::with_mode(pins::in_2, OUTPUT),
   };
-  device::motor right_motor{
+  device::motor motor_right{
     .pin_enable_ = pins::with_mode(pins::en_b, OUTPUT),
     .pin_forward_ = pins::with_mode(pins::in_4, OUTPUT),
     .pin_backward_ = pins::with_mode(pins::in_3, OUTPUT),
   };
-  driver::blocking_steering drive{
-    .l_ = left_motor,
-    .r_ = right_motor,
+  driver::velocity_counter speedometer_left = { .cache_ = counters::cache{ counters::g_cnt_a0 }, .motor_ = motor_left };
+  driver::velocity_counter speedometer_right = { .cache_ = counters::cache{ counters::g_cnt_a0 }, .motor_ = motor_right };
+
+  driver::steering_blocking drive{
+    .l_ = motor_left,
+    .r_ = motor_right,
     .ls_ = sensor_left,
     .rs_ = sensor_right
   };
@@ -470,25 +596,36 @@ void loop() {
     .servo_ = servo
   };
 
+  // beeper::stop();
+  // lcd.clear();
 
   // symulator samochodzika
   // device::button buttie_left = {
   //   .input_pin = pins::with_mode(pins::sensor_left, INPUT_PULLUP),
   // };
+  // digitalWrite(pins::sensor_left, HIGH);
   // device::button buttie_right = {
   //   .input_pin = pins::with_mode(pins::sensor_right, INPUT_PULLUP),
   // };
-  // digitalWrite(pins::sensor_left, HIGH);
   // digitalWrite(pins::sensor_right, HIGH);
 
-  left_motor.set_power(255);
-  right_motor.set_power(255);
+  motor_left.set_power(255);
+  motor_right.set_power(255);
+
+  {
+    // test connectorow
+    motor_left.forward();
+    motor_right.backward();
+    delay(1000);
+    if (sensor_left.current() == 0 && sensor_right.current() == 0) {
+      panic();
+    }
+  }
   for (;;) {
 
     // program rozgladania sie
-    delay(500);  // allow car to stabilize its position
     const auto measurements = tower.measure();
-    auto decide = [&measurements]() -> astd::pair<int16_t, uint16_t> {
+    auto furthest_away = [&measurements]() -> astd::pair<int16_t, uint16_t> {
       auto _iter = astd::max_element(measurements.begin(), measurements.end(), [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
         if (l.second == device::sonar::error_reason::too_far) {
           return false;
@@ -501,9 +638,9 @@ void loop() {
         return l.first < r.first;
       });
       uint16_t _index = _iter - measurements.begin();
-      uint16_t _direction = driver::constants::positions[_index]; // left is 180 right is 0
+      uint16_t _direction = driver::constants::_positions[_index];  // left is 180 right is 0
 
-      int16_t direction = static_cast<int16_t>(_direction) - 90; // left is 90 right is -90
+      int16_t direction = static_cast<int16_t>(_direction) - 90;  // left is 90 right is -90
       uint16_t distance = measurements[_index].first;
       if (config::enable_logs) {
         Serial.print("decision: {");
@@ -514,60 +651,77 @@ void loop() {
       }
       return { direction, distance };
     };
-    auto d = decide();
+    auto d = furthest_away();
     auto& direction = d.first;
     auto& distance = d.second;
-    delay(500);  // TODO test czy mozna bez
-    if (distance < 5) {
-      panic();
-    }
+    // delay(500);  // TODO test czy mozna bez
     drive.rotate(direction);
-    drive.forward(distance * 0.9);
+    // drive.forward(distance * 0.9);
+    drive.forward(10);
+    // delay(500);  // allow car to stabilize its position
+    speedometer_left.probe();
+    speedometer_right.probe();
+    {
+      double l = speedometer_left.current();
+      double r = speedometer_right.current();
+      char text_left[16] = { 0 };
+      char text_right[16] = { 0 };
+      dtostrf(l, 3, 2, text_left);
+      dtostrf(r, 3, 2, text_right);
+      // FIXME: make wrapper
+      lcd.lcd_.clear();
+      lcd.lcd_.setCursor(0, 0);
+      lcd.lcd_.print(text_left);
+      lcd.lcd_.setCursor(0, 1);
+      lcd.lcd_.print(text_right);
+    }
 
-    // drive.forward(40);
-    // delay(500);
-    // delay(500);
-    // beeper::start(100000);
-    // drive.backward(40);
-    // beeper::stop();
-    // delay(500);
-    // drive.rotate_left(45);
-    // delay(500);
-    // drive.rotate_right(45);
-    // delay(500);
+    {
+      // drive.forward(40);
+      // delay(500);
+      // delay(500);
+      // beeper::start(100000);
+      // drive.backward(40);
+      // beeper::stop();
+      // delay(500);
+      // drive.rotate_left(45);
+      // delay(500);
+      // drive.rotate_right(45);
+      // delay(500);
 
-    // test synchronizacji odleglosci
-    // auto res = sonar.measure();
-    // uint16_t& cm = res.first;
-    // // uint16_t cm = 50;
-    // // Serial.println(cm);
-    // delay(2000);
-    // drive.forward(cm);
-    // delay(2000);
-    // drive.backward(cm);
-    // delay(2000);
+      // test synchronizacji odleglosci
+      // auto res = sonar.measure();
+      // uint16_t& cm = res.first;
+      // delay(2000);
+      // drive.forward(cm);
+      // delay(2000);
+      // drive.backward(cm);
+      // delay(2000);
 
-    // test na kierunki motora
-    // device::motor& m = right_motor;
-    // m.forward();
-    // delay(3000);
-    // beeper::start(100000);
-    // m.backward();
-    // beeper::stop();
-    // delay(3000);
-    // device::motor& m = left_motor;
-    // m.forward();
-    // delay(3000);
-    // beeper::start(100000);
-    // m.backward();
-    // beeper::stop();
-    // delay(3000);
+      // test na kierunki motora
+      // device::motor& m = left_motor;
+      // m.forward();
+      // delay(3000);
+      // m.backward();
+      // beeper::start(100000);
+      // delay(3000);
+      // m.stop();
+      // beeper::stop();
+      // device::motor& m = right_motor;
+      // m.forward();
+      // delay(3000);
+      // m.backward();
+      // beeper::start(100000);
+      // delay(3000);
+      // m.stop();
+      // beeper::stop();
 
-    // test na obrot
-    // drive.rotate_left(90);
-    // delay(1000);
-    // drive.rotate_right(90);
-    // delay(1000);
+      // test na obrot
+      // drive.rotate_left(90);
+      // delay(1000);
+      // drive.rotate_right(90);
+      // delay(1000);
+    }
   }
 }
 
