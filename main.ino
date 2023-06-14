@@ -38,6 +38,9 @@ constexpr uint8_t servo_control = 11;  // zolty
 // czerwony vcc
 
 // wyswietlacz sda scl vcc gnd
+
+// ir
+constexpr uint8_t ir_recive = 12;
 }
 
 namespace pins {
@@ -240,7 +243,7 @@ void stop() {
   digitalWrite(13, 0);
 }
 
-void start(uint32_t us) {
+void start(uint32_t us = 100000) {
   digitalWrite(13, 0);
   Timer1.detachInterrupt();
   Timer1.attachInterrupt(beep, us);
@@ -285,8 +288,8 @@ struct motor {
     BACKWARD,
   };
 
-  states state_ {};
-  uint8_t power_ {};
+  states state_{};
+  uint8_t power_{};
 
   void set_power(uint8_t power) {
     power_ = power;
@@ -397,7 +400,7 @@ namespace device {
 struct lcd_wrapper {
   LiquidCrystal_I2C lcd_ = LiquidCrystal_I2C(0x27, 16, 2);
 
-  void init() {
+  lcd_wrapper() {
     lcd_.init();
     lcd_.backlight();
   }
@@ -415,24 +418,168 @@ struct lcd_wrapper {
 };
 }
 
+#include <IRremote.hpp>
+namespace device {
+struct ir_reciver_wrapper {
+
+  uint32_t update_timestamp_{};
+
+  struct pinout {
+    uint8_t ir_recive_;
+  };
+  const pinout pins_;
+
+  ir_reciver_wrapper(pinout pins)
+    : pins_{ pins } {
+    IrReceiver.begin(pins_.ir_recive_, ENABLE_LED_FEEDBACK);
+  }
+
+  bool available() {
+    if (IrReceiver.decode()) {
+      update_timestamp_ = millis();
+      return true;
+    }
+    return false;
+  }
+
+  auto get() -> uint32_t {
+    return IrReceiver.decodedIRData.decodedRawData;
+  }
+
+  enum button_code : uint32_t {
+    sig_continue = 0,
+    num_1 = 0xBA45FF00,
+    num_2 = 0xB946FF00,
+    num_3 = 0xB847FF00,
+    num_4 = 0xBB44FF00,
+    num_5 = 0xBF40FF00,
+    num_6 = 0xBC43FF00,
+    num_7 = 0xF807FF00,
+    num_8 = 0xEA15FF00,
+    num_9 = 0xF609FF00,
+    num_0 = 0xE619FF00,
+    sym_star = 0xE916FF00,
+    sym_hash = 0xF20DFF00,
+    arr_u = 0xE718FF00,
+    arr_d = 0xAD52FF00,
+    arr_l = 0xF708FF00,
+    arr_r = 0xA55AFF00,
+    sym_ok = 0xE31CFF00,
+  };
+};
+
+struct virtual_pilot {
+  ir_reciver_wrapper& recv_;
+
+  virtual_pilot(ir_reciver_wrapper& recv)
+    : recv_{ recv } {
+  }
+
+  enum class command : uint8_t {
+    stop = 0,
+    forward,
+    backward,
+    turn_left,
+    turn_right,
+  };
+
+  command command_{};
+
+  void update() {
+    uint32_t since_last = millis() - recv_.update_timestamp_;
+
+    if (since_last > 110) {
+      command_ = command::stop;
+    } else {
+      uint32_t code = recv_.get();
+      using button_code = ir_reciver_wrapper::button_code;
+      switch (code) {
+        case button_code::arr_u:
+          {
+            command_ = command::forward;
+          }
+          break;
+        case button_code::arr_d:
+          {
+            command_ = command::backward;
+          }
+          break;
+        case button_code::arr_l:
+          {
+            command_ = command::turn_left;
+          }
+          break;
+        case button_code::arr_r:
+          {
+            command_ = command::turn_right;
+          }
+          break;
+        case button_code::sig_continue:
+          {
+            // command_ = command_;
+          }
+          break;
+        default:
+          {
+            if constexpr (config::enable_logs) {
+              Serial.println("virtual_pilot::update{unsupported button_code}");
+            }
+            command_ = command::stop;
+          }
+      }
+    }
+  }
+};
+}
+
 namespace driver {
 
-struct steering_blocking {
-  device::motor& l_;
-  device::motor& r_;
+struct simple_steering {
+  const device::motor& l_;
+  const device::motor& r_;
 
-  device::tick_sensor& ls_;
-  device::tick_sensor& rs_;
+private:
+  void _go(void (device::motor::*l_action)(), void (device::motor::*r_action)()) {
+
+  }
+public:
+  void forward() {
+    _go(&device::motor::forward, &device::motor::forward);
+  }
+
+  void backward() {
+    _go(&device::motor::backward, &device::motor::backward);
+  }
+
+  void stop() {
+    _go(&device::motor::stop, &device::motor::stop);
+  }
+
+  void rotate_left() {
+    _go(&device::motor::backward, &device::motor::forward);
+  }
+
+  void rotate_right() {
+    _go(&device::motor::forward, &device::motor::backward);
+  }
+
+  // TODO relaxed rotate and so on left stoped right forward
+};
+
+struct controlled_steering {
+  const driver::simple_steering steering_;
+
+  const device::tick_sensor& ls_;
+  const device::tick_sensor& rs_;
 
   static constexpr float tick_to_cm = (40.) / 21.;
   static constexpr float deg_to_cm = 0.3;
 
-  void _go(void (device::motor::*l_action)(), void (device::motor::*r_action)(), uint16_t cm) {
+  void _go(void (driver::simple_steering::*action)(), uint16_t cm) {
     ls_.reset();
     rs_.reset();
 
-    (l_.*l_action)();
-    (r_.*r_action)();
+    (steering_.*action)();
 
     counters::tick_t ticks = cm * tick_to_cm;
 
@@ -440,11 +587,11 @@ struct steering_blocking {
     bool rb = true;
     while (lb || rb) {
       if (lb && ls_.current() >= ticks) {
-        l_.stop();
+        steering_.l_.stop();
         lb = false;
       }
       if (rb && rs_.current() >= ticks) {
-        r_.stop();
+        steering_.r_.stop();
         rb = false;
       }
 
@@ -458,24 +605,22 @@ struct steering_blocking {
       Serial.print(rs_.current());
       Serial.print("\n");
     }
-    // ls_.reset();
-    // rs_.reset();
   }
 
   void forward(uint16_t cm) {
-    _go(&device::motor::forward, &device::motor::forward, cm);
+    _go(&driver::simple_steering::forward, cm);
   }
 
   void backward(uint16_t cm) {
-    _go(&device::motor::backward, &device::motor::backward, cm);
+    _go(&driver::simple_steering::backward, cm);
   }
 
   void rotate_left(uint16_t deg) {
-    _go(&device::motor::backward, &device::motor::forward, deg * deg_to_cm);
+    _go(&driver::simple_steering::rotate_left, deg * deg_to_cm);
   }
 
   void rotate_right(uint16_t deg) {
-    _go(&device::motor::forward, &device::motor::backward, deg * deg_to_cm);
+    _go(&driver::simple_steering::rotate_right, deg * deg_to_cm);
   }
 
   void rotate(int16_t deg_to_left) {
@@ -584,7 +729,6 @@ void loop() {
   beeper::init();
 
   device::lcd_wrapper lcd{};
-  lcd.init();
 
   // beeper::start(100000);
   // lcd.uwu_message();
@@ -616,11 +760,14 @@ void loop() {
   driver::velocity_counter speedometer_left(counters::cache{ counters::g_cnt_a0 }, motor_left);
   driver::velocity_counter speedometer_right(counters::cache{ counters::g_cnt_a1 }, motor_right);
 
-  driver::steering_blocking drive{
+  driver::simple_steering steering{
     .l_ = motor_left,
     .r_ = motor_right,
+  };
+  driver::controlled_steering drive{
+    .steering_ = steering,
     .ls_ = sensor_left,
-    .rs_ = sensor_right
+    .rs_ = sensor_right,
   };
 
   device::sonar sonar({ .trigger_pin_ = pins::with_mode(pins::sonar_trigger, OUTPUT),
@@ -632,6 +779,9 @@ void loop() {
     .sonar_ = sonar,
     .servo_ = servo
   };
+
+  device::ir_reciver_wrapper recv({ .ir_recive_ = pins::with_mode(pins::ir_recive, INPUT) });
+  device::virtual_pilot pilot(recv);
 
   // beeper::stop();
   // lcd.clear();
@@ -649,128 +799,161 @@ void loop() {
   motor_left.set_power(255);
   motor_right.set_power(255);
 
-  {
-    // connector test
-    lcd.lcd_.clear();
-    lcd.lcd_.setCursor(0, 0);
-    lcd.lcd_.print("test czujnikow");
+  // {
+  //   // connector test
+  //   lcd.lcd_.clear();
+  //   lcd.lcd_.setCursor(0, 0);
+  //   lcd.lcd_.print("test czujnikow");
 
-    motor_left.forward();
-    motor_right.backward();
+  //   motor_left.forward();
+  //   motor_right.backward();
 
-    delay(800);
+  //   delay(800);
 
-    motor_left.stop();
-    motor_right.stop();
+  //   motor_left.stop();
+  //   motor_right.stop();
 
-    if (sensor_left.current() == 0 && sensor_right.current() == 0) {
-      lcd.lcd_.setCursor(0, 1);
-      lcd.lcd_.print("failed");
-      panic();
-    } else {
-      lcd.lcd_.setCursor(0, 1);
-      lcd.lcd_.print("ok");
-    }
+  //   if (sensor_left.current() == 0 && sensor_right.current() == 0) {
+  //     lcd.lcd_.setCursor(0, 1);
+  //     lcd.lcd_.print("failed");
+  //     panic();
+  //   } else {
+  //     lcd.lcd_.setCursor(0, 1);
+  //     lcd.lcd_.print("ok");
+  //   }
 
-    delay(1000);
-    lcd.clear();
-  }
+  //   delay(1000);
+  //   lcd.clear();
+  // }
 
-  {
-    // test obrotu
-    lcd.lcd_.clear();
-    lcd.lcd_.setCursor(0, 0);
-    lcd.lcd_.print("test obrotu");
+  // {
+  //   // test obrotu
+  //   lcd.lcd_.clear();
+  //   lcd.lcd_.setCursor(0, 0);
+  //   lcd.lcd_.print("test obrotu");
 
-    drive.rotate_left(90);
-    delay(1000);
-    drive.rotate_right(90);
+  //   drive.rotate_left(90);
+  //   delay(1000);
+  //   drive.rotate_right(90);
 
-    lcd.lcd_.setCursor(0, 1);
-    lcd.lcd_.print("???");
-    delay(1000);
+  //   lcd.lcd_.setCursor(0, 1);
+  //   lcd.lcd_.print("???");
+  //   delay(1000);
 
-    lcd.clear();
-  }
+  //   lcd.clear();
+  // }
 
   for (;;) {
 
-    // program rozgladania sie
-    const auto measurements = tower.measure();
-
-    auto furthest_away = [&measurements]() -> astd::pair<int16_t, uint16_t> {
-      auto _iter = astd::max_element(
-        measurements.begin(),
-        measurements.end(),
-        [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
-          if (l.second == device::sonar::error_reason::TOO_FAR) {
-            return false;
-          }
-
-          if (r.second == device::sonar::error_reason::TOO_FAR) {
-            return true;
-          }
-
-          return l.first < r.first;
-        });
-
-      uint16_t _index = _iter - measurements.begin();
-      int16_t direction = static_cast<int16_t>(driver::sonar_tower_blocking::_positions[_index]) - 90;
-      uint16_t distance = measurements[_index].first;
-
-      if constexpr (config::enable_logs) {
-        Serial.print("decision: {");
-        Serial.print(direction);
-        Serial.print(", ");
-        Serial.print(distance);
-        Serial.print("}\n");
-      }
-
-      return { direction, distance };
-    };
-    auto d = furthest_away();
-
-    // delay(500);
-    auto& direction = d.first;
-    auto& distance = d.second;
-    drive.rotate(direction);
-    // drive.forward(distance * 0.9);
-    drive.forward(10);
-    // delay(500);
-
-    speedometer_left.probe();
-    speedometer_right.probe();
     {
-      double l = speedometer_left.current() * 1000;
-      double r = speedometer_right.current() * 1000;
-
-      // FIXME: make wrapper
-      lcd.lcd_.clear();
-      {
-        char text[16] = { 0 };
-        dtostrf(l, 3, 2, text);
-        lcd.lcd_.setCursor(0, 0);
-        lcd.lcd_.print(text);
-      }
-      {
-        char text[16] = { 0 };
-        dtostrf(r, 3, 2, text);
-        lcd.lcd_.setCursor(0, 1);
-        lcd.lcd_.print(text);
-      }
-      {
-        char text[16] = { 0 };
-        dtostrf(double(distance), 3, 2, text);
-        lcd.lcd_.setCursor(8, 0);
-        lcd.lcd_.print(text);
-      }
-      {
-        char text[16] = { 0 };
-        dtostrf(double(direction), 3, 2, text);
-        lcd.lcd_.setCursor(8, 1);
-        lcd.lcd_.print(text);
+      // bardzo prosty program poruszania sie za pilotem na liste 7
+      using command = device::virtual_pilot::command;
+      switch (pilot.command_) {
+        case command::forward: {
+          steering.forward();
+        }break;
+        case command::backward: {
+          steering.backward();
+        }break;
+        case command::turn_left: {
+          drive.rotate_left(45);
+        }break;
+        case command::turn_right: {
+          drive.rotate_right(45);
+        }break;
+        case command::stop: {
+          steering.stop();
+        }break;
+        default: {
+          steering.stop();
+          beeper::start();
+          delay(1000);
+          beeper::stop();
+          if constexpr (config::enable_logs) {
+            Serial.println("main::l7{not supported command}");
+          }
+        }
       }
     }
+
+    // {  // program rozgladania sie na liste 4 i 5
+    //   const auto measurements = tower.measure();
+
+    //   auto furthest_away = [&measurements]() -> astd::pair<int16_t, uint16_t> {
+    //     auto _iter = astd::max_element(
+    //       measurements.begin(),
+    //       measurements.end(),
+    //       [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
+    //         if (l.second == device::sonar::error_reason::TOO_FAR) {
+    //           return false;
+    //         }
+
+    //         if (r.second == device::sonar::error_reason::TOO_FAR) {
+    //           return true;
+    //         }
+
+    //         return l.first < r.first;
+    //       });
+
+    //     uint16_t _index = _iter - measurements.begin();
+    //     int16_t direction = static_cast<int16_t>(driver::sonar_tower_blocking::_positions[_index]) - 90;
+    //     uint16_t distance = measurements[_index].first;
+
+    //     if constexpr (config::enable_logs) {
+    //       Serial.print("decision: {");
+    //       Serial.print(direction);
+    //       Serial.print(", ");
+    //       Serial.print(distance);
+    //       Serial.print("}\n");
+    //     }
+
+    //     return { direction, distance };
+    //   };
+    //   auto d = furthest_away();
+
+    //   // delay(500);
+    //   auto& direction = d.first;
+    //   auto& distance = d.second;
+    //   drive.rotate(direction);
+    //   // drive.forward(distance * 0.9);
+    //   drive.forward(10);
+    //   // delay(500);
+
+    //   speedometer_left.probe();
+    //   speedometer_right.probe();
+    //   {
+    //     // ticks per ms to ticks per s
+    //     double l = speedometer_left.current() * 1000;
+    //     double r = speedometer_right.current() * 1000;
+
+    //     // FIXME: make wrapper
+    //     lcd.lcd_.clear();
+    //     {
+    //       char text[16] = { 0 };
+    //       dtostrf(l, 3, 2, text);
+    //       lcd.lcd_.setCursor(0, 0);
+    //       lcd.lcd_.print(text);
+    //     }
+    //     {
+    //       char text[16] = { 0 };
+    //       dtostrf(r, 3, 2, text);
+    //       lcd.lcd_.setCursor(0, 1);
+    //       lcd.lcd_.print(text);
+    //     }
+    //     {
+    //       char text[16] = { 0 };
+    //       dtostrf(double(distance), 3, 2, text);
+    //       lcd.lcd_.setCursor(8, 0);
+    //       lcd.lcd_.print(text);
+    //     }
+    //     {
+    //       char text[16] = { 0 };
+    //       dtostrf(double(direction), 3, 2, text);
+    //       lcd.lcd_.setCursor(8, 1);
+    //       lcd.lcd_.print(text);
+    //     }
+    //   }
+    // }
 
     {
       // drive.forward(40);
@@ -826,8 +1009,11 @@ void loop() {
 
 // przetestuj sonar - dziala odleglosc sie zgadza
 // przetestuj dokladna odleglosc jechania - zatrzymuje sie bezposrednio przed przeszkoda
-// przetestuj dokladny obrot i wymysl mnoznik
+// przetestuj dokladny obrot i wymysl mnoznik - jest ok ale pewnie zalezy od samochodzika
 // przetestuj serwo - dziala idealnie
 // decydowanie kierunku
 // zatrzymywanie przed przeszkoda, rozgladanie sie, podejmowanie decyzji, skrecanie, kontynuuowanie
 //   - rozglada sie, podejmuje decyzje, skreca, przejezdza 0.9 odl do przeszkody
+
+// przetestuj wyswietlanie speedometra na w programie z rozgladaniem
+// przetestuj jezdzenie na pilocie
