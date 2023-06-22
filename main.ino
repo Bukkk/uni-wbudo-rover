@@ -3,7 +3,7 @@
 // now it is c++20, use system avr-gcc and -std=c++20 in platform.txt
 
 namespace config {
-constexpr bool enable_logs = false;
+constexpr bool enable_logs = true;
 }
 
 namespace pins {
@@ -13,12 +13,12 @@ constexpr uint8_t builtin_led = 13;
 // silniki
 // 11 10 9 6 5 3 orginalnie ale 9 10 sa uzywane przez timer1
 // pasek lewo bialy szary folet niebieski zielony zolty prawo
-constexpr uint8_t eng_1 = 6;  // bialy lewo 1.0
-constexpr uint8_t eng_2 = 8;  // szary
-constexpr uint8_t eng_3 = 7;  // filet
-constexpr uint8_t eng_4 = 2;  // niebieski
-constexpr uint8_t eng_5 = 4;  // zielony
-constexpr uint8_t eng_6 = 5;  // zolty prawo 1.0
+constexpr uint8_t eng_1 = 6;   // bialy lewo 1.0
+constexpr uint8_t eng_2 = 8;   // szary
+constexpr uint8_t eng_3 = 7;   // fiolet
+constexpr uint8_t eng_4 = 4;   // niebieski
+constexpr uint8_t eng_5 = 12;  // zielony
+constexpr uint8_t eng_6 = 5;   // zolty prawo 1.0
 
 // tick_sensor
 // brazowy vcc
@@ -29,18 +29,20 @@ constexpr uint8_t counter_a1 = A1;  // pomaranczowy prawy
 constexpr uint8_t counter_a0 = A0;  // niebieski lewy
 
 // sonar
-constexpr uint8_t sonar_trigger = A5;  // opisany pin
-constexpr uint8_t sonar_echo = A4;     // opisany pin
+constexpr uint8_t sonar_trigger = A2;  // opisany pin
+constexpr uint8_t sonar_echo = A3;     // opisany pin
 
 //servo
-// carny gnd
-constexpr uint8_t servo_control = 11;  // zolty
+// brazowy gnd
+constexpr uint8_t servo_control = 9;  // zolty
 // czerwony vcc
 
 // wyswietlacz sda scl vcc gnd
 
 // ir
-constexpr uint8_t ir_recive = 12;
+// gnd
+constexpr uint8_t ir_recive = 2;
+// vcc
 }
 
 namespace pins {
@@ -226,30 +228,30 @@ struct wrapper {
 
 }
 
-#include <TimerOne.h>
-namespace beeper {
+// #include <TimerOne.h>
+// namespace beeper {
 
-void init() {
-  Timer1.initialize();  // is using pins 9 and 10
-}
+// void init() {
+//   // Timer1.initialize();  // is using pins 9 and 10
+// }
 
-void beep() {
-  auto state = digitalRead(13) ^ 1;
-  digitalWrite(13, state);
-}
+// void beep() {
+//   // auto state = digitalRead(13) ^ 1;
+//   // digitalWrite(13, state);
+// }
 
-void stop() {
-  Timer1.detachInterrupt();
-  digitalWrite(13, 0);
-}
+// void stop() {
+//   // Timer1.detachInterrupt();
+//   // digitalWrite(13, 0);
+// }
 
-void start(uint32_t us = 100000) {
-  digitalWrite(13, 0);
-  Timer1.detachInterrupt();
-  Timer1.attachInterrupt(beep, us);
-}
+// void start(uint32_t us = 100000) {
+//   // digitalWrite(13, 0);
+//   // Timer1.detachInterrupt();
+//   // Timer1.attachInterrupt(beep, us);
+// }
 
-}
+// }
 
 
 namespace device {
@@ -345,6 +347,7 @@ struct sonar {
     TOO_FAR
   };
 
+  // in cm
   auto measure() -> astd::pair<uint16_t, error_reason> {
     digitalWrite(pins_.trigger_pin_, HIGH);
     delayMicroseconds(15);  // 10 minimum
@@ -358,8 +361,8 @@ struct sonar {
     } else if (pulse > max_us) {
       return { 0, error_reason::TOO_FAR };
     } else {
-      uint16_t meas = pulse * cm_per_pulse;
-      return { meas, error_reason::NONE };
+      uint16_t cm = pulse * cm_per_pulse;
+      return { cm, error_reason::NONE };
     }
   }
 };
@@ -385,6 +388,11 @@ public:
 
 
   void set_angle(uint16_t deg) {
+    if constexpr (config::enable_logs) {
+      Serial.print("servo::set_angle{");
+      Serial.print(deg);
+      Serial.println("}");
+    }
     s_.write(deg);
   }
 
@@ -422,7 +430,7 @@ struct lcd_wrapper {
 namespace device {
 struct ir_reciver_wrapper {
 
-  uint32_t update_timestamp_{};
+  unsigned long update_timestamp_{};
 
   struct pinout {
     uint8_t ir_recive_;
@@ -437,6 +445,7 @@ struct ir_reciver_wrapper {
   bool available() {
     if (IrReceiver.decode()) {
       update_timestamp_ = millis();
+      IrReceiver.resume();
       return true;
     }
     return false;
@@ -486,37 +495,82 @@ struct virtual_pilot {
   command command_{};
 
   void update() {
+    bool recived = recv_.available();
     uint32_t since_last = millis() - recv_.update_timestamp_;
 
     if (since_last > 110) {
+      if constexpr (config::enable_logs) {
+        Serial.println("virtual_pilot::update{timeout}");
+      }
+      command_ = command::stop;
+    }
+
+    if (!recived) {
+      return;
+    }
+
+    // if constexpr (config::enable_logs) {
+    //   Serial.println("virtual_pilot::update{}");
+    // }
+
+    if constexpr (config::enable_logs) {
+      Serial.println(recv_.update_timestamp_);
+      Serial.println(millis());
+      Serial.println(since_last);
+    }
+
+    if (since_last > 110) {
+      if constexpr (config::enable_logs) {
+        Serial.println("virtual_pilot::update{recived but outdated}");
+      }
       command_ = command::stop;
     } else {
-      uint32_t code = recv_.get();
       using button_code = ir_reciver_wrapper::button_code;
+      uint32_t code = recv_.get();
       switch (code) {
         case button_code::arr_u:
           {
+            if constexpr (config::enable_logs) {
+              Serial.println("virtual_pilot::update{forward}");
+            }
             command_ = command::forward;
           }
           break;
         case button_code::arr_d:
           {
+            if constexpr (config::enable_logs) {
+              Serial.println("virtual_pilot::update{backward}");
+            }
             command_ = command::backward;
           }
           break;
         case button_code::arr_l:
           {
+            if constexpr (config::enable_logs) {
+              Serial.println("virtual_pilot::update{left}");
+            }
             command_ = command::turn_left;
           }
           break;
         case button_code::arr_r:
           {
+            if constexpr (config::enable_logs) {
+              Serial.println("virtual_pilot::update{right}");
+            }
             command_ = command::turn_right;
           }
           break;
         case button_code::sig_continue:
           {
             // command_ = command_;
+          }
+          break;
+        case button_code::sym_ok:
+          {
+            if constexpr (config::enable_logs) {
+              Serial.println("virtual_pilot::update{stop}");
+            }
+            command_ = command::stop;
           }
           break;
         default:
@@ -535,12 +589,13 @@ struct virtual_pilot {
 namespace driver {
 
 struct simple_steering {
-  const device::motor& l_;
-  const device::motor& r_;
+  device::motor& l_;
+  device::motor& r_;
 
 private:
   void _go(void (device::motor::*l_action)(), void (device::motor::*r_action)()) {
-
+    (l_.*l_action)();
+    (r_.*r_action)();
   }
 public:
   void forward() {
@@ -567,10 +622,10 @@ public:
 };
 
 struct controlled_steering {
-  const driver::simple_steering steering_;
+  driver::simple_steering steering_;
 
-  const device::tick_sensor& ls_;
-  const device::tick_sensor& rs_;
+  device::tick_sensor& ls_;
+  device::tick_sensor& rs_;
 
   static constexpr float tick_to_cm = (40.) / 21.;
   static constexpr float deg_to_cm = 0.3;
@@ -593,6 +648,13 @@ struct controlled_steering {
       if (rb && rs_.current() >= ticks) {
         steering_.r_.stop();
         rb = false;
+      }
+      if constexpr (config::enable_logs) {
+        Serial.print("controlled_steering::_go::while{");
+        Serial.print(ls_.current());
+        Serial.print(", ");
+        Serial.print(rs_.current());
+        Serial.println("}");
       }
 
       // FIXME if counter is badly connected, it loops forever
@@ -636,16 +698,23 @@ struct sonar_tower_blocking {
   device::sonar& sonar_;
   device::servo& servo_;
 
+  // left to right
   constexpr static astd::array<uint16_t, 5> _positions = { 180u, 135u, 90u, 45u, 0u };
 
-  auto measure() -> astd::array<decltype(sonar_.measure()), _positions.size()> {
-    decltype(measure()) results{};
+  auto measure_positions() -> astd::array<decltype(sonar_.measure()), _positions.size()> {
+    decltype(measure_positions()) results{};
 
     for (uint8_t i{}; i < _positions.size(); ++i) {
       uint8_t deg = _positions[i];
       servo_.set_angle(deg);
       delay(300);  // time to allow servo to rotate
       auto m = sonar_.measure();
+
+      if constexpr (config::enable_logs) {
+        Serial.print("measurement{");
+        Serial.print(m.first);
+        Serial.println("}");
+      }
       results[i] = m;
     }
 
@@ -653,11 +722,11 @@ struct sonar_tower_blocking {
 
     if constexpr (config::enable_logs) {
       for (uint8_t i{}; i < _positions.size(); ++i) {
-        Serial.print("angle=");
+        Serial.print("measured positions{angle=");
         Serial.print(_positions[i]);
-        Serial.print(",result=");
+        Serial.print(", result=");
         Serial.print(results[i].first);
-        Serial.print("\n");
+        Serial.println("}");
       }
     }
 
@@ -713,7 +782,10 @@ struct velocity_counter {
 
 
 void panic() {
-  beeper::start(100000);
+  // beeper::start();
+  if constexpr (config::enable_logs) {
+    Serial.println("panic{}");
+  }
   for (;;)
     ;
 }
@@ -726,19 +798,22 @@ void setup() {
 }
 
 void loop() {
-  beeper::init();
-
-  device::lcd_wrapper lcd{};
-
-  // beeper::start(100000);
-  // lcd.uwu_message();
+  // beeper::init();
+  // beeper::start(200000);
 
   if constexpr (config::enable_logs) {
     Serial.begin(9600);
     while (!Serial)
       ;
+
+    Serial.println("init{}");
   }
 
+  device::lcd_wrapper lcd{};
+  lcd.uwu_message();
+  if constexpr (config::enable_logs) {
+    Serial.println("lcd enabled{}");
+  }
 
   counters::init();
   device::tick_sensor sensor_left(
@@ -759,7 +834,6 @@ void loop() {
   });
   driver::velocity_counter speedometer_left(counters::cache{ counters::g_cnt_a0 }, motor_left);
   driver::velocity_counter speedometer_right(counters::cache{ counters::g_cnt_a1 }, motor_right);
-
   driver::simple_steering steering{
     .l_ = motor_left,
     .r_ = motor_right,
@@ -769,6 +843,9 @@ void loop() {
     .ls_ = sensor_left,
     .rs_ = sensor_right,
   };
+  if constexpr (config::enable_logs) {
+    Serial.println("motors enabled{}");
+  }
 
   device::sonar sonar({ .trigger_pin_ = pins::with_mode(pins::sonar_trigger, OUTPUT),
                         .echo_pin_ = pins::with_mode(pins::sonar_echo, INPUT) });
@@ -779,9 +856,15 @@ void loop() {
     .sonar_ = sonar,
     .servo_ = servo
   };
+  if constexpr (config::enable_logs) {
+    Serial.println("tower enabled{}");
+  }
 
-  device::ir_reciver_wrapper recv({ .ir_recive_ = pins::with_mode(pins::ir_recive, INPUT) });
+  device::ir_reciver_wrapper recv({ .ir_recive_ = pins::ir_recive /* pins::with_mode(pins::ir_recive, INPUT) */ });
   device::virtual_pilot pilot(recv);
+  if constexpr (config::enable_logs) {
+    Serial.println("ir enabled{}");
+  }
 
   // beeper::stop();
   // lcd.clear();
@@ -843,167 +926,229 @@ void loop() {
   //   lcd.clear();
   // }
 
+  if constexpr (config::enable_logs) {
+    Serial.println("mainloop{}");
+  }
   for (;;) {
-
-    {
-      // bardzo prosty program poruszania sie za pilotem na liste 7
-      using command = device::virtual_pilot::command;
-      switch (pilot.command_) {
-        case command::forward: {
-          steering.forward();
-        }break;
-        case command::backward: {
-          steering.backward();
-        }break;
-        case command::turn_left: {
-          drive.rotate_left(45);
-        }break;
-        case command::turn_right: {
-          drive.rotate_right(45);
-        }break;
-        case command::stop: {
-          steering.stop();
-        }break;
-        default: {
-          steering.stop();
-          beeper::start();
-          delay(1000);
-          beeper::stop();
-          if constexpr (config::enable_logs) {
-            Serial.println("main::l7{not supported command}");
-          }
-        }
-      }
-    }
-
-    // {  // program rozgladania sie na liste 4 i 5
-    //   const auto measurements = tower.measure();
-
-    //   auto furthest_away = [&measurements]() -> astd::pair<int16_t, uint16_t> {
-    //     auto _iter = astd::max_element(
-    //       measurements.begin(),
-    //       measurements.end(),
-    //       [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
-    //         if (l.second == device::sonar::error_reason::TOO_FAR) {
-    //           return false;
-    //         }
-
-    //         if (r.second == device::sonar::error_reason::TOO_FAR) {
-    //           return true;
-    //         }
-
-    //         return l.first < r.first;
-    //       });
-
-    //     uint16_t _index = _iter - measurements.begin();
-    //     int16_t direction = static_cast<int16_t>(driver::sonar_tower_blocking::_positions[_index]) - 90;
-    //     uint16_t distance = measurements[_index].first;
-
-    //     if constexpr (config::enable_logs) {
-    //       Serial.print("decision: {");
-    //       Serial.print(direction);
-    //       Serial.print(", ");
-    //       Serial.print(distance);
-    //       Serial.print("}\n");
-    //     }
-
-    //     return { direction, distance };
-    //   };
-    //   auto d = furthest_away();
-
-    //   // delay(500);
-    //   auto& direction = d.first;
-    //   auto& distance = d.second;
-    //   drive.rotate(direction);
-    //   // drive.forward(distance * 0.9);
-    //   drive.forward(10);
-    //   // delay(500);
-
-    //   speedometer_left.probe();
-    //   speedometer_right.probe();
-    //   {
-    //     // ticks per ms to ticks per s
-    //     double l = speedometer_left.current() * 1000;
-    //     double r = speedometer_right.current() * 1000;
-
-    //     // FIXME: make wrapper
-    //     lcd.lcd_.clear();
-    //     {
-    //       char text[16] = { 0 };
-    //       dtostrf(l, 3, 2, text);
-    //       lcd.lcd_.setCursor(0, 0);
-    //       lcd.lcd_.print(text);
-    //     }
-    //     {
-    //       char text[16] = { 0 };
-    //       dtostrf(r, 3, 2, text);
-    //       lcd.lcd_.setCursor(0, 1);
-    //       lcd.lcd_.print(text);
-    //     }
-    //     {
-    //       char text[16] = { 0 };
-    //       dtostrf(double(distance), 3, 2, text);
-    //       lcd.lcd_.setCursor(8, 0);
-    //       lcd.lcd_.print(text);
-    //     }
-    //     {
-    //       char text[16] = { 0 };
-    //       dtostrf(double(direction), 3, 2, text);
-    //       lcd.lcd_.setCursor(8, 1);
-    //       lcd.lcd_.print(text);
-    //     }
-    //   }
+    // if constexpr (config::enable_logs) {
+    //   Serial.println("loop{}");
     // }
 
     {
-      // drive.forward(40);
-      // delay(500);
-      // delay(500);
-      // beeper::start(100000);
-      // drive.backward(40);
-      // beeper::stop();
-      // delay(500);
-      // drive.rotate_left(45);
-      // delay(500);
-      // drive.rotate_right(45);
-      // delay(500);
+      // bardzo prosty program poruszania sie za pilotem na liste 7
 
-      // test synchronizacji odleglosci
-      // auto res = sonar.measure();
-      // uint16_t& cm = res.first;
-      // delay(2000);
-      // drive.forward(cm);
-      // delay(2000);
-      // drive.backward(cm);
-      // delay(2000);
+      auto road_clear = [&](uint16_t angle) {
+        servo.set_angle(angle);
+        auto [dist, err] = sonar.measure();
+        return dist > 10 && err == device::sonar::error_reason::NONE || err == device::sonar::error_reason::TOO_FAR;
+      };
 
-      // test na kierunki motora
-      // device::motor& m = left_motor;
-      // m.forward();
-      // delay(3000);
-      // m.backward();
-      // beeper::start(100000);
-      // delay(3000);
-      // m.stop();
-      // beeper::stop();
-      // device::motor& m = right_motor;
-      // m.forward();
-      // delay(3000);
-      // m.backward();
-      // beeper::start(100000);
-      // delay(3000);
-      // m.stop();
-      // beeper::stop();
+      pilot.update();
+      using command = device::virtual_pilot::command;
+      switch (pilot.command_) {
+        case command::forward:
+          {
+            if (road_clear(90)) {
+              steering.forward();
+            } else {
+              steering.stop();
+            }
+          }
+          break;
+        case command::backward:
+          {
+            steering.backward();
+          }
+          break;
+        case command::turn_left:
+          {
+            // drive.rotate_left(45);
+            steering.rotate_left();
+          }
+          break;
+        case command::turn_right:
+          {
+            // drive.rotate_right(45);
+            steering.rotate_right();
+          }
+          break;
+        case command::stop:
+          {
+            steering.stop();
+          }
+          break;
+        default:
+          {
+            steering.stop();
+            // beeper::start();
+            delay(1000);
+            // beeper::stop();
+            if constexpr (config::enable_logs) {
+              Serial.println("main::l7{not supported command}");
+            }
+          }
+      }
 
-      // test na obrot
-      // drive.rotate_left(90);
-      // delay(1000);
-      // drive.rotate_right(90);
-      // delay(1000);
+      speedometer_left.probe();
+      speedometer_right.probe();
+      {
+        // ticks per ms to ticks per s
+        double l = speedometer_left.current() * 1000;
+        double r = speedometer_right.current() * 1000;
+
+        // FIXME: make wrapper
+        lcd.lcd_.clear();
+        {
+          char text[16] = { 0 };
+          dtostrf(l, 3, 2, text);
+          lcd.lcd_.setCursor(0, 0);
+          lcd.lcd_.print(text);
+        }
+        {
+          char text[16] = { 0 };
+          dtostrf(r, 3, 2, text);
+          lcd.lcd_.setCursor(0, 1);
+          lcd.lcd_.print(text);
+        }
+        // {
+        //   char text[16] = { 0 };
+        //   dtostrf(double(distance), 3, 2, text);
+        //   lcd.lcd_.setCursor(8, 0);
+        //   lcd.lcd_.print(text);
+        // }
+      }
+
+      delay(10);
     }
+
+    //   {  // program rozgladania sie na liste 4 i 5
+    //     const auto measurements = tower.measure_positions();
+
+    //     auto furthest_away = [&measurements]() -> astd::pair<int16_t, uint16_t> {
+    //       auto _iter = astd::max_element(
+    //         measurements.begin(),
+    //         measurements.end(),
+    //         [](decltype(measurements[0]) const& l, decltype(measurements[0]) const& r) {
+    //           if (l.second == device::sonar::error_reason::TOO_FAR) {
+    //             return false;
+    //           }
+
+    //           if (r.second == device::sonar::error_reason::TOO_FAR) {
+    //             return true;
+    //           }
+
+    //           return l.first < r.first;
+    //         });
+
+    //       uint16_t _index = _iter - measurements.begin();
+    //       int16_t direction = static_cast<int16_t>(driver::sonar_tower_blocking::_positions[_index]) - 90;
+    //       uint16_t distance = measurements[_index].first;
+
+    //       if constexpr (config::enable_logs) {
+    //         Serial.print("decision: {");
+    //         Serial.print(direction);
+    //         Serial.print(", ");
+    //         Serial.print(distance);
+    //         Serial.print("}\n");
+    //       }
+
+    //       return { direction, distance };
+    //     };
+    //     auto d = furthest_away();
+
+    //     // delay(500);
+    //     auto& direction = d.first;
+    //     auto& distance = d.second;
+    //     drive.rotate(direction);
+    //     // drive.forward(distance * 0.9);
+    //     drive.forward(10);
+    //     // delay(500);
+
+    //     speedometer_left.probe();
+    //     speedometer_right.probe();
+    //     {
+    //       // ticks per ms to ticks per s
+    //       double l = speedometer_left.current() * 1000;
+    //       double r = speedometer_right.current() * 1000;
+
+    //       // FIXME: make wrapper
+    //       // lcd.lcd_.clear();
+    //       // {
+    //       //   char text[16] = { 0 };
+    //       //   dtostrf(l, 3, 2, text);
+    //       //   lcd.lcd_.setCursor(0, 0);
+    //       //   lcd.lcd_.print(text);
+    //       // }
+    //       // {
+    //       //   char text[16] = { 0 };
+    //       //   dtostrf(r, 3, 2, text);
+    //       //   lcd.lcd_.setCursor(0, 1);
+    //       //   lcd.lcd_.print(text);
+    //       // }
+    //       // {
+    //       //   char text[16] = { 0 };
+    //       //   dtostrf(double(distance), 3, 2, text);
+    //       //   lcd.lcd_.setCursor(8, 0);
+    //       //   lcd.lcd_.print(text);
+    //       // }
+    //       // {
+    //       //   char text[16] = { 0 };
+    //       //   dtostrf(double(direction), 3, 2, text);
+    //       //   lcd.lcd_.setCursor(8, 1);
+    //       //   lcd.lcd_.print(text);
+    //       // }
+    //     }
+    //   }
+
+    //   {
+    //     // drive.forward(40);
+    //     // delay(500);
+    //     // delay(500);
+    //     // beeper::start(100000);
+    //     // drive.backward(40);
+    //     // beeper::stop();
+    //     // delay(500);
+    //     // drive.rotate_left(45);
+    //     // delay(500);
+    //     // drive.rotate_right(45);
+    //     // delay(500);
+
+    //     // test synchronizacji odleglosci
+    //     // auto res = sonar.measure();
+    //     // uint16_t& cm = res.first;
+    //     // delay(2000);
+    //     // drive.forward(cm);
+    //     // delay(2000);
+    //     // drive.backward(cm);
+    //     // delay(2000);
+
+    //     // test na kierunki motora
+    //     // device::motor& m = left_motor;
+    //     // m.forward();
+    //     // delay(3000);
+    //     // m.backward();
+    //     // beeper::start(100000);
+    //     // delay(3000);
+    //     // m.stop();
+    //     // beeper::stop();
+    //     // device::motor& m = right_motor;
+    //     // m.forward();
+    //     // delay(3000);
+    //     // m.backward();
+    //     // beeper::start(100000);
+    //     // delay(3000);
+    //     // m.stop();
+    //     // beeper::stop();
+
+    //     // test na obrot
+    //     // drive.rotate_left(90);
+    //     // delay(1000);
+    //     // drive.rotate_right(90);
+    //     // delay(1000);
+    //   }
+    // }
   }
 }
-
 // TODO kalibracja kolek??
 // TODO nie blokujace jezdzenie
 
@@ -1017,3 +1162,4 @@ void loop() {
 
 // przetestuj wyswietlanie speedometra na w programie z rozgladaniem
 // przetestuj jezdzenie na pilocie
+// nie dziala constexpr
