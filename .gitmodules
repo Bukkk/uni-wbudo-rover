@@ -1,0 +1,3 @@
+[submodule "extern/LiquidCrystal_I2C"]
+	path = extern/LiquidCrystal_I2C
+	url = https://github.com/Bukkk/LiquidCrystal_I2C
